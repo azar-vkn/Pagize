@@ -88,6 +88,17 @@ export const tools: Tool[] = [
 
 export const getTool = (slug: string) => tools.find((t) => t.slug === slug);
 
-export const navTools = ["merge-pdf", "split-pdf", "compress-pdf", "jpg-to-pdf", "watermark-pdf"]
-  .map((s) => getTool(s))
-  .filter((t): t is Tool => Boolean(t));
+const navShort: Record<string, string> = {
+  "merge-pdf": "Merge",
+  "split-pdf": "Split",
+  "compress-pdf": "Compress",
+  "jpg-to-pdf": "Images",
+  "watermark-pdf": "Watermark",
+};
+
+export const navTools = Object.keys(navShort)
+  .map((slug) => {
+    const tool = getTool(slug);
+    return tool ? { ...tool, short: navShort[slug] ?? tool.name } : undefined;
+  })
+  .filter((t): t is Tool & { short: string } => Boolean(t));
