@@ -41,7 +41,7 @@ export function IslandNav() {
                 params={{ slug: tool.slug }}
                 className="rounded-full px-3.5 py-2 text-sm font-medium text-muted-foreground transition-all hover:bg-accent hover:text-accent-foreground data-[status=active]:bg-primary data-[status=active]:text-primary-foreground"
               >
-                {tool.name.replace(" PDF", "")}
+                {tool.short}
               </Link>
             ))}
           </div>
@@ -58,7 +58,7 @@ export function IslandNav() {
               className="flex shrink-0 flex-col items-center gap-1 rounded-2xl px-3 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors data-[status=active]:bg-primary data-[status=active]:text-primary-foreground"
             >
               <tool.icon className="size-4" />
-              {tool.name.replace(" PDF", "")}
+              {tool.short}
             </Link>
           ))}
         </nav>
