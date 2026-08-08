@@ -30,7 +30,7 @@ export function IslandNav() {
             <span className="grid size-7 place-items-center rounded-xl bg-primary text-primary-foreground">
               <FileStack className="size-4" />
             </span>
-            <span className="font-display text-sm font-semibold">PaperKit</span>
+            <span className="font-display text-sm font-semibold">Pagize</span>
           </Link>
           <span className="mx-1 hidden h-6 w-px bg-border md:block" />
           <div className="hidden items-center gap-1 md:flex">

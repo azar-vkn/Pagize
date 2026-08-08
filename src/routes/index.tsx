@@ -1,23 +1,21 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { Search, ShieldCheck, Zap, Sparkles } from "lucide-react";
 import { useMemo, useState } from "react";
 import { IslandNav } from "@/components/IslandNav";
 import { SiteFooter } from "@/components/SiteFooter";
-import { DropZone } from "@/components/DropZone";
 import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
 import { categories, tools } from "@/lib/tools";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "PaperKit — Free Browser PDF Tools" },
+      { title: "Pagize — Free Browser PDF Tools" },
       {
         name: "description",
         content:
           "Merge, split, compress, rotate, watermark and convert PDFs right in your browser. No uploads, no waiting, no sign-up.",
       },
-      { property: "og:title", content: "PaperKit — Free Browser PDF Tools" },
+      { property: "og:title", content: "Pagize — Free Browser PDF Tools" },
       {
         property: "og:description",
         content: "Merge, split, compress and convert PDFs privately in your browser.",
@@ -28,9 +26,7 @@ export const Route = createFileRoute("/")({
 });
 
 function Index() {
-  const navigate = useNavigate();
   const [query, setQuery] = useState("");
-  const [files, setFiles] = useState<File[]>([]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -72,37 +68,18 @@ function Index() {
           </div>
         </section>
 
-        <section className="island mt-10 p-4 md:p-6">
-          <DropZone
-            accepts="application/pdf,image/jpeg,image/png"
-            multiple
-            files={files}
-            onChange={setFiles}
-            label="Drop PDFs or images to get started"
-          />
-          {files.length > 0 && (
-            <div className="mt-4 flex flex-wrap justify-center gap-2">
-              {tools
-                .filter((t) => t.ready)
-                .slice(0, 5)
-                .map((t) => (
-                  <Button
-                    key={t.slug}
-                    variant="secondary"
-                    className="rounded-full"
-                    onClick={() => navigate({ to: "/tools/$slug", params: { slug: t.slug } })}
-                  >
-                    <t.icon className="size-4" /> {t.name}
-                  </Button>
-                ))}
-            </div>
-          )}
-        </section>
-
         <section className="mt-6 grid gap-4 sm:grid-cols-3">
           {[
-            { icon: Zap, title: "Instant", body: "No queues or uploads — processing starts on drop." },
-            { icon: ShieldCheck, title: "Private", body: "Files are handled locally and never stored." },
+            {
+              icon: Zap,
+              title: "Instant",
+              body: "No queues or uploads — processing starts on drop.",
+            },
+            {
+              icon: ShieldCheck,
+              title: "Private",
+              body: "Files are handled locally and never stored.",
+            },
             { icon: Sparkles, title: "Free tier", body: "Core tools free; batch and API on Pro." },
           ].map((f) => (
             <div key={f.title} className="island flex items-start gap-3 px-5 py-4">

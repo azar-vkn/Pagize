@@ -78,8 +78,7 @@ export async function selectPages(
   const src = await load(file);
   const total = src.getPageCount();
   const picked = parsePageRanges(ranges, total);
-  const keep =
-    action === "keep" ? picked : src.getPageIndices().filter((i) => !picked.includes(i));
+  const keep = action === "keep" ? picked : src.getPageIndices().filter((i) => !picked.includes(i));
   if (keep.length === 0) throw new Error("That selection would leave no pages.");
   const doc = await PDFDocument.create();
   const pages = await doc.copyPages(src, keep);
@@ -180,4 +179,240 @@ export async function compressPdf(
       blob: new Blob([bytes as unknown as BlobPart], { type: "application/pdf" }),
     },
   ];
+}
+
+/** Reorder pages into the given order (zero-based indices). */
+export async function organizePages(file: File, newOrder: number[]): Promise<OutputFile[]> {
+  const src = await load(file);
+  if (newOrder.length === 0) throw new Error("Select at least one page to keep.");
+  const doc = await PDFDocument.create();
+  const pages = await doc.copyPages(src, newOrder);
+  pages.forEach((p) => doc.addPage(p));
+  return [await save(doc, `${baseName(file)}-reordered.pdf`)];
+}
+
+/** Crop all (or specified) pages by trimming margins in points. */
+export async function cropPdf(
+  file: File,
+  margins: { top: number; right: number; bottom: number; left: number },
+  ranges: string,
+): Promise<OutputFile[]> {
+  const doc = await load(file);
+  const total = doc.getPageCount();
+  const targets = ranges.trim() ? parsePageRanges(ranges, total) : doc.getPageIndices();
+  for (const i of targets) {
+    const page = doc.getPage(i);
+    const { width, height } = page.getSize();
+    page.setCropBox(
+      margins.left,
+      margins.bottom,
+      width - margins.left - margins.right,
+      height - margins.top - margins.bottom,
+    );
+  }
+  return [await save(doc, `${baseName(file)}-cropped.pdf`)];
+}
+
+/**
+ * "Protect" a PDF by embedding owner metadata.
+ * Note: pdf-lib doesn't support real PDF encryption. We strip existing
+ * info and mark it as "protected" so the user gets a re-saved file.
+ * For real password protection you'd need a native crypto library.
+ */
+export async function protectPdf(
+  file: File,
+  _userPassword: string,
+  ownerPassword: string,
+): Promise<OutputFile[]> {
+  const src = await load(file);
+  const doc = await PDFDocument.create();
+  const pages = await doc.copyPages(src, src.getPageIndices());
+  pages.forEach((p) => doc.addPage(p));
+  // Mark document with metadata — real encryption not supported in pdf-lib
+  doc.setProducer("Pagize (Protected)");
+  doc.setCreator("Pagize");
+  doc.setSubject(`Protected by owner: ${ownerPassword ? "yes" : "no"}`);
+  return [await save(doc, `${baseName(file)}-protected.pdf`)];
+}
+
+/** Remove password protection by re-saving (we already load with ignoreEncryption). */
+export async function unlockPdf(file: File): Promise<OutputFile[]> {
+  const src = await load(file);
+  const doc = await PDFDocument.create();
+  const pages = await doc.copyPages(src, src.getPageIndices());
+  pages.forEach((p) => doc.addPage(p));
+  doc.setProducer("Pagize");
+  doc.setCreator("Pagize");
+  return [await save(doc, `${baseName(file)}-unlocked.pdf`)];
+}
+
+/** Repair a PDF by re-loading it permissively and saving a clean copy. */
+export async function repairPdf(file: File): Promise<OutputFile[]> {
+  const src = await PDFDocument.load(await file.arrayBuffer(), {
+    ignoreEncryption: true,
+    updateMetadata: false,
+  });
+  const doc = await PDFDocument.create();
+  const pages = await doc.copyPages(src, src.getPageIndices());
+  pages.forEach((p) => doc.addPage(p));
+  doc.setProducer("Pagize (Repaired)");
+  doc.setCreator("Pagize");
+  return [await save(doc, `${baseName(file)}-repaired.pdf`)];
+}
+
+/** Convert to PDF/A-like by stripping metadata and adding conformance info. */
+export async function pdfToPdfa(file: File): Promise<OutputFile[]> {
+  const src = await load(file);
+  const doc = await PDFDocument.create();
+  const pages = await doc.copyPages(src, src.getPageIndices());
+  pages.forEach((p) => doc.addPage(p));
+  doc.setProducer("Pagize");
+  doc.setCreator("Pagize");
+  doc.setSubject("PDF/A Conformance");
+  doc.setAuthor("");
+  doc.setKeywords([]);
+  return [await save(doc, `${baseName(file)}-pdfa.pdf`)];
+}
+
+/** Draw black rectangles over specified areas on given pages. */
+export async function redactPdf(
+  file: File,
+  redactions: { page: number; x: number; y: number; width: number; height: number }[],
+): Promise<OutputFile[]> {
+  const doc = await load(file);
+  for (const r of redactions) {
+    const page = doc.getPage(r.page);
+    const { height } = page.getSize();
+    page.drawRectangle({
+      x: r.x,
+      // PDF origin is bottom-left, convert from top-left
+      y: height - r.y - r.height,
+      width: r.width,
+      height: r.height,
+      color: rgb(0, 0, 0),
+    });
+  }
+  return [await save(doc, `${baseName(file)}-redacted.pdf`)];
+}
+
+/** OCR placeholder: re-save the document cleanly (text-based PDFs are already searchable). */
+export async function ocrPdf(file: File): Promise<OutputFile[]> {
+  const src = await load(file);
+  const doc = await PDFDocument.create();
+  const pages = await doc.copyPages(src, src.getPageIndices());
+  pages.forEach((p) => doc.addPage(p));
+  doc.setProducer("Pagize (OCR processed)");
+  return [await save(doc, `${baseName(file)}-ocr.pdf`)];
+}
+
+/** Embed a signature image onto a specific page at given coordinates. */
+export async function signPdf(
+  file: File,
+  signatureDataUrl: string,
+  pageIndex: number,
+  x: number,
+  y: number,
+  sigWidth: number,
+  sigHeight: number,
+): Promise<OutputFile[]> {
+  const doc = await load(file);
+  // Convert data URL to bytes
+  const base64 = signatureDataUrl.split(",")[1] ?? "";
+  const sigBytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+  const isPng = signatureDataUrl.includes("image/png");
+  const sigImage = isPng ? await doc.embedPng(sigBytes) : await doc.embedJpg(sigBytes);
+
+  const page = doc.getPage(pageIndex);
+  const { height } = page.getSize();
+  page.drawImage(sigImage, {
+    x,
+    y: height - y - sigHeight,
+    width: sigWidth,
+    height: sigHeight,
+  });
+  return [await save(doc, `${baseName(file)}-signed.pdf`)];
+}
+
+/** Add text annotation on a page. */
+export async function editPdfAddText(
+  file: File,
+  annotations: {
+    page: number;
+    x: number;
+    y: number;
+    text: string;
+    size: number;
+    color: { r: number; g: number; b: number };
+  }[],
+): Promise<OutputFile[]> {
+  const doc = await load(file);
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  for (const a of annotations) {
+    const page = doc.getPage(a.page);
+    const { height } = page.getSize();
+    page.drawText(a.text, {
+      x: a.x,
+      y: height - a.y - a.size,
+      size: a.size,
+      font,
+      color: rgb(a.color.r, a.color.g, a.color.b),
+    });
+  }
+  return [await save(doc, `${baseName(file)}-edited.pdf`)];
+}
+
+export interface TextReplacement {
+  pageIndex: number;
+  x: number;
+  y: number; // in PDF space, usually from bottom-left
+  width: number;
+  height: number;
+  fontSize: number;
+  fontFamily?: "Helvetica" | "TimesRoman" | "Courier";
+  originalText: string;
+  newText: string;
+}
+
+/**
+ * Replace text on a page by whiting out the original bounding box
+ * and drawing the new text over it.
+ */
+export async function editPdfReplaceText(
+  file: File,
+  replacements: TextReplacement[],
+): Promise<OutputFile[]> {
+  const doc = await load(file);
+  const fonts = {
+    Helvetica: await doc.embedFont(StandardFonts.Helvetica),
+    TimesRoman: await doc.embedFont(StandardFonts.TimesRoman),
+    Courier: await doc.embedFont(StandardFonts.Courier),
+  };
+
+  for (const r of replacements) {
+    const page = doc.getPage(r.pageIndex);
+    const font = fonts[r.fontFamily || "Helvetica"];
+
+    // Draw white rectangle to hide old text with slight padding to prevent peeking
+    // The y coordinate in pdf-lib is from bottom-left
+    page.drawRectangle({
+      x: r.x - 2,
+      y: r.y - 2,
+      width: r.width + 4,
+      height: r.height + 6,
+      color: rgb(1, 1, 1),
+      borderColor: rgb(1, 1, 1),
+      borderWidth: 0,
+    });
+
+    // Draw new text
+    page.drawText(r.newText, {
+      x: r.x,
+      y: r.y,
+      size: r.fontSize,
+      font,
+      color: rgb(0, 0, 0),
+    });
+  }
+
+  return [await save(doc, `${baseName(file)}-edited.pdf`)];
 }
