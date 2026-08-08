@@ -1,28 +1,43 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { renderPage, extractTextItems, TextItemPosition } from "@/lib/pdf-renderer";
 import { TextReplacement } from "@/lib/pdf-ops";
 import { Button } from "@/components/ui/button";
-import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, Check, X, Type } from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import type { PageViewport } from "pdfjs-dist";
 
 type PdfTextEditorProps = {
   file: File;
   edits: TextReplacement[];
-  selectedItemKey: string | null;
-  onSelectTextItem: (item: TextItemPosition | null, pageIndex: number, itemIdx: number) => void;
+  onEdit: (edit: TextReplacement | null) => void;
 };
 
-export function PdfTextEditor({ file, edits, selectedItemKey, onSelectTextItem }: PdfTextEditorProps) {
+export function PdfTextEditor({ file, edits, onEdit }: PdfTextEditorProps) {
   const [pageIndex, setPageIndex] = useState(0);
   const [numPages, setNumPages] = useState<number | null>(null);
-  
+
   const [bgUrl, setBgUrl] = useState<string | null>(null);
   const [items, setItems] = useState<TextItemPosition[]>([]);
   const [viewport, setViewport] = useState<PageViewport | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Fetch page count (quick way is via renderAllPages or getPageCount if available)
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+
+  // Local state for the currently active edit (for the toolbar)
+  const [activeEditVal, setActiveEditVal] = useState<string>("");
+  const [activeFont, setActiveFont] = useState<"Helvetica" | "TimesRoman" | "Courier">("Helvetica");
+  const [activeColor, setActiveColor] = useState<string>("#000000");
+
+  const editableRef = useRef<HTMLDivElement>(null);
+
+  // Fetch page count
   useEffect(() => {
     import("@/lib/pdf-renderer").then((m) => {
       m.getPageCount(file).then(setNumPages).catch(console.error);
@@ -35,12 +50,9 @@ export function PdfTextEditor({ file, edits, selectedItemKey, onSelectTextItem }
     setLoading(true);
     setBgUrl(null);
     setItems([]);
-    onSelectTextItem(null, pageIndex, -1); // Deselect on page change
+    setEditingKey(null);
 
-    Promise.all([
-      renderPage(file, pageIndex, 2), // High-res background
-      extractTextItems(file, pageIndex)
-    ])
+    Promise.all([renderPage(file, pageIndex, 2), extractTextItems(file, pageIndex)])
       .then(([url, { items: newItems, viewport: newViewport }]) => {
         if (!cancelled) {
           setBgUrl(url);
@@ -54,8 +66,34 @@ export function PdfTextEditor({ file, edits, selectedItemKey, onSelectTextItem }
         if (!cancelled) setLoading(false);
       });
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [file, pageIndex]);
+
+  // Focus the editable div when editing starts
+  useEffect(() => {
+    if (editingKey && editableRef.current) {
+      // Focus and move cursor to end
+      const el = editableRef.current;
+      if (el.textContent !== activeEditVal) {
+        el.textContent = activeEditVal;
+      }
+      el.focus();
+      if (
+        typeof window.getSelection !== "undefined" &&
+        typeof document.createRange !== "undefined"
+      ) {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        range.collapse(false); // true for start, false for end
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingKey]);
 
   if (loading && !bgUrl) {
     return (
@@ -66,22 +104,52 @@ export function PdfTextEditor({ file, edits, selectedItemKey, onSelectTextItem }
     );
   }
 
-  // Create a map for quick lookup of current edits by item key
   const editMap = new Map<string, TextReplacement>();
   for (const edit of edits) {
-    // We can match edits by pageIndex, x, and y. A more robust way is to just use the key if we stored it,
-    // but the edits array doesn't store the key.
-    // Let's match by pageIndex + x + y since they are unique per item on a page.
     const key = `${edit.pageIndex}-${edit.x}-${edit.y}`;
     editMap.set(key, edit);
   }
 
+  const saveCurrentEdit = (item: TextItemPosition) => {
+    if (activeEditVal === item.str && activeFont === "Helvetica" && activeColor === "#000000") {
+      onEdit(null); // Actually, we pass a replacement with original values and the parent component removes it
+      onEdit({
+        pageIndex,
+        x: item.x,
+        y: item.y,
+        pdfX: item.pdfX,
+        pdfY: item.pdfY,
+        width: item.width,
+        height: item.height,
+        fontSize: item.fontSize,
+        fontFamily: activeFont,
+        color: activeColor,
+        originalText: item.str,
+        newText: item.str, // same as original means remove
+      });
+      return;
+    }
+
+    onEdit({
+      pageIndex,
+      x: item.x,
+      y: item.y,
+      pdfX: item.pdfX,
+      pdfY: item.pdfY,
+      width: item.width,
+      height: item.height,
+      fontSize: item.fontSize,
+      fontFamily: activeFont,
+      color: activeColor,
+      originalText: item.str,
+      newText: activeEditVal,
+    });
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-2 rounded-xl border bg-card px-4 py-3 shadow-sm sm:flex-row sm:items-center sm:justify-between">
-        <p className="text-sm font-medium">
-          Select any text block to edit
-        </p>
+        <p className="text-sm font-medium">Click any text block to edit it seamlessly</p>
         <div className="flex items-center gap-4">
           <span className="text-sm text-muted-foreground">
             Page {pageIndex + 1} of {numPages ?? "?"}
@@ -92,7 +160,10 @@ export function PdfTextEditor({ file, edits, selectedItemKey, onSelectTextItem }
               size="icon"
               className="size-8"
               disabled={pageIndex === 0 || loading}
-              onClick={() => setPageIndex((p) => p - 1)}
+              onClick={() => {
+                setPageIndex((p) => p - 1);
+                setEditingKey(null);
+              }}
             >
               <ChevronLeft className="size-4" />
             </Button>
@@ -101,7 +172,10 @@ export function PdfTextEditor({ file, edits, selectedItemKey, onSelectTextItem }
               size="icon"
               className="size-8"
               disabled={numPages === null || pageIndex >= numPages - 1 || loading}
-              onClick={() => setPageIndex((p) => p + 1)}
+              onClick={() => {
+                setPageIndex((p) => p + 1);
+                setEditingKey(null);
+              }}
             >
               <ChevronRight className="size-4" />
             </Button>
@@ -109,8 +183,10 @@ export function PdfTextEditor({ file, edits, selectedItemKey, onSelectTextItem }
         </div>
       </div>
 
-      <div className="relative mx-auto overflow-hidden rounded-xl border shadow-sm transition-opacity"
-           style={{ opacity: loading ? 0.5 : 1 }}>
+      <div
+        className="relative mx-auto overflow-hidden rounded-xl border shadow-sm transition-opacity"
+        style={{ opacity: loading ? 0.5 : 1 }}
+      >
         {bgUrl && viewport && (
           <div
             className="relative mx-auto select-none"
@@ -119,47 +195,188 @@ export function PdfTextEditor({ file, edits, selectedItemKey, onSelectTextItem }
               maxWidth: "100%",
             }}
           >
-            {/* Background PDF render */}
             <img
               src={bgUrl}
               alt={`Page ${pageIndex + 1}`}
               className="absolute inset-0 size-full object-contain pointer-events-none"
             />
 
-            {/* Interactive Text Overlays */}
             {items.map((item, idx) => {
               const itemKey = `${pageIndex}-${idx}`;
               const matchKey = `${pageIndex}-${item.x}-${item.y}`;
               const currentEdit = editMap.get(matchKey);
-              
-              const isSelected = selectedItemKey === itemKey;
-              const isModified = !!currentEdit;
-              const displayText = currentEdit ? currentEdit.newText : item.str;
 
+              const isEditing = editingKey === itemKey;
+              const isModified = !!currentEdit;
+
+              // Only read displayText if not currently editing it to avoid overriding user input on re-renders
+              const displayText = isEditing
+                ? activeEditVal
+                : currentEdit
+                  ? currentEdit.newText
+                  : item.str;
+
+              // Get CSS font family string based on active selection
+              const getCssFont = (font?: string) => {
+                if (font === "TimesRoman") return "Times New Roman, serif";
+                if (font === "Courier") return "Courier New, monospace";
+                return "Helvetica, Arial, sans-serif";
+              };
+
+              const appliedFont = isEditing ? activeFont : currentEdit?.fontFamily || "Helvetica";
+              const appliedColor = isEditing
+                ? activeColor
+                : currentEdit?.color || item.color || "#000000";
+
+              const style = {
+                left: `${(item.x / viewport.width) * 100}%`,
+                top: `${(item.y / viewport.height) * 100}%`,
+                // Original width is kept as a reference, but we let it flow if editing
+                width: isEditing ? "auto" : `${(item.width / viewport.width) * 100}%`,
+                minWidth: isEditing ? `${(item.width / viewport.width) * 100}%` : undefined,
+                height: `${(item.height / viewport.height) * 100}%`,
+              };
+
+              if (isEditing) {
+                return (
+                  <div
+                    key={itemKey}
+                    className="absolute z-40 bg-background shadow-lg outline outline-1 outline-primary rounded-sm"
+                    style={{
+                      ...style,
+                      padding: "0 2px", // Slight padding for caret
+                      marginLeft: "-2px", // Offset padding
+                    }}
+                  >
+                    {/* Floating Toolbar */}
+                    <div
+                      className="absolute bottom-full left-0 mb-2 flex items-center gap-1.5 rounded-lg border bg-popover p-1.5 shadow-md animate-in fade-in zoom-in-95"
+                      style={{ whiteSpace: "nowrap" }}
+                    >
+                      <Select
+                        value={activeFont}
+                        onValueChange={(val: "Helvetica" | "TimesRoman" | "Courier") =>
+                          setActiveFont(val)
+                        }
+                      >
+                        <SelectTrigger className="h-7 w-[120px] text-xs border-none shadow-none focus:ring-0">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="Helvetica">
+                            <span className="font-sans">Helvetica</span>
+                          </SelectItem>
+                          <SelectItem value="TimesRoman">
+                            <span className="font-serif">Times Roman</span>
+                          </SelectItem>
+                          <SelectItem value="Courier">
+                            <span className="font-mono">Courier</span>
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+
+                      <div className="h-4 w-px bg-border mx-1" />
+
+                      <input
+                        type="color"
+                        value={activeColor}
+                        onChange={(e) => setActiveColor(e.target.value)}
+                        className="size-6 cursor-pointer rounded border-0 p-0 bg-transparent"
+                        title="Text Color"
+                      />
+
+                      <div className="h-4 w-px bg-border mx-1" />
+
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="size-7 h-7 w-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-100"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          saveCurrentEdit(item);
+                          setEditingKey(null);
+                        }}
+                      >
+                        <Check className="size-4" />
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="size-7 h-7 w-7 text-muted-foreground"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingKey(null);
+                        }}
+                      >
+                        <X className="size-4" />
+                      </Button>
+                    </div>
+
+                    {/* True Content Editable Editor */}
+                    <div
+                      ref={editableRef}
+                      contentEditable
+                      suppressContentEditableWarning
+                      className="outline-none whitespace-nowrap overflow-visible"
+                      style={{
+                        fontSize: `${(item.fontSize / viewport.height) * 100}vh`,
+                        fontFamily: getCssFont(appliedFont),
+                        color: appliedColor,
+                        lineHeight: 1,
+                        minWidth: "10px",
+                      }}
+                      onBlur={(e) => {
+                        // We do not auto-save on blur anymore, because clicking the toolbar triggers blur!
+                        // The user MUST click the Checkmark or X, or we can use a timeout trick.
+                        // Actually, requiring explicit Checkmark click is safer for floating toolbars.
+                      }}
+                      onInput={(e) => {
+                        setActiveEditVal(e.currentTarget.textContent || "");
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault(); // Prevent multi-line completely for safety
+                          saveCurrentEdit(item);
+                          setEditingKey(null);
+                        }
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          setEditingKey(null);
+                        }
+                      }}
+                    />
+                  </div>
+                );
+              }
+
+              // Normal display view (not actively editing)
               return (
                 <button
                   key={itemKey}
                   type="button"
                   className={cn(
                     "group absolute flex items-end overflow-visible rounded-sm transition-all text-left",
-                    isSelected ? "z-20 outline outline-2 outline-primary bg-primary/10 shadow-sm" : "z-10 hover:z-20",
-                    !isSelected && isModified ? "bg-yellow-200/40 outline outline-1 outline-yellow-400 text-yellow-900 cursor-pointer hover:bg-yellow-200/60" : "",
-                    !isSelected && !isModified ? "hover:bg-blue-500/10 hover:outline hover:outline-1 hover:outline-blue-400 cursor-pointer" : ""
+                    "z-10 hover:z-20 cursor-text",
+                    isModified
+                      ? "bg-white"
+                      : "hover:bg-blue-500/10 hover:outline hover:outline-1 hover:outline-blue-400 text-transparent hover:text-transparent",
                   )}
-                  style={{
-                    left: `${(item.x / viewport.width) * 100}%`,
-                    top: `${(item.y / viewport.height) * 100}%`,
-                    width: `${(item.width / viewport.width) * 100}%`,
-                    height: `${(item.height / viewport.height) * 100}%`,
+                  style={style}
+                  onClick={() => {
+                    setActiveEditVal(currentEdit ? currentEdit.newText : item.str);
+                    setActiveFont(currentEdit?.fontFamily || "Helvetica");
+                    setActiveColor(currentEdit?.color || item.color || "#000000");
+                    setEditingKey(itemKey);
                   }}
-                  onClick={() => onSelectTextItem(item, pageIndex, idx)}
                 >
                   {isModified && (
-                    <span 
-                      className="absolute inset-0 flex items-end whitespace-nowrap bg-background text-foreground px-0.5"
+                    <span
+                      className="relative block whitespace-nowrap w-full"
                       style={{
                         fontSize: "100%", // Fit naturally
                         lineHeight: 1,
+                        fontFamily: getCssFont(appliedFont),
+                        color: appliedColor,
                       }}
                     >
                       {displayText}
@@ -168,14 +385,6 @@ export function PdfTextEditor({ file, edits, selectedItemKey, onSelectTextItem }
                 </button>
               );
             })}
-            
-            {items.length === 0 && (
-              <div className="absolute inset-0 flex items-center justify-center bg-background/50 backdrop-blur-sm pointer-events-none">
-                <p className="rounded-full bg-background px-4 py-2 text-sm font-medium shadow-sm">
-                  No editable text found on this page.
-                </p>
-              </div>
-            )}
           </div>
         )}
       </div>

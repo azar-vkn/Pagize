@@ -363,12 +363,15 @@ export async function editPdfAddText(
 
 export interface TextReplacement {
   pageIndex: number;
-  x: number;
-  y: number; // in PDF space, usually from bottom-left
-  width: number;
-  height: number;
-  fontSize: number;
+  x: number; // canvas Y (used for uniqueness matching in UI)
+  y: number;
+  pdfX: number; // actual PDF coordinate
+  pdfY: number; // actual PDF coordinate (baseline)
+  width: number; // in PDF space
+  height: number; // in PDF space
+  fontSize: number; // in PDF space
   fontFamily?: "Helvetica" | "TimesRoman" | "Courier";
+  color?: string; // hex color e.g., "#000000"
   originalText: string;
   newText: string;
 }
@@ -392,25 +395,37 @@ export async function editPdfReplaceText(
     const page = doc.getPage(r.pageIndex);
     const font = fonts[r.fontFamily || "Helvetica"];
 
-    // Draw white rectangle to hide old text with slight padding to prevent peeking
-    // The y coordinate in pdf-lib is from bottom-left
+    const lines = r.newText.split("\n");
+    const newHeight = Math.max(r.height, lines.length * r.fontSize);
+
+    // Draw white rectangle to hide old text with slight padding
     page.drawRectangle({
-      x: r.x - 2,
-      y: r.y - 2,
-      width: r.width + 4,
-      height: r.height + 6,
+      x: r.pdfX - 2,
+      y: r.pdfY - (newHeight - r.fontSize) - r.fontSize * 0.25,
+      width: Math.max(r.width + 4, font.widthOfTextAtSize(lines[0] || "", r.fontSize) + 4),
+      height: newHeight + r.fontSize * 0.5,
       color: rgb(1, 1, 1),
       borderColor: rgb(1, 1, 1),
       borderWidth: 0,
     });
 
+    // Parse hex color or default to black
+    const hexColor = r.color || "#000000";
+    const cleanHex = hexColor.replace("#", "");
+    const colorRgb = rgb(
+      parseInt(cleanHex.substring(0, 2), 16) / 255,
+      parseInt(cleanHex.substring(2, 4), 16) / 255,
+      parseInt(cleanHex.substring(4, 6), 16) / 255,
+    );
+
     // Draw new text
     page.drawText(r.newText, {
-      x: r.x,
-      y: r.y,
+      x: r.pdfX,
+      y: r.pdfY,
       size: r.fontSize,
       font,
-      color: rgb(0, 0, 0),
+      color: colorRgb,
+      lineHeight: r.fontSize,
     });
   }
 
