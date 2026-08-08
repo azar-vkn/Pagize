@@ -130,9 +130,9 @@ export async function extractTextItems(
 
       // Attempt to extract color (pdf.js >v3 exposes color as RGB Uint8ClampedArray)
       let hexColor = "#000000";
-      const colorArr = (item as Record<string, unknown>).color as Uint8ClampedArray | undefined;
+      const colorArr = (item as Record<string, unknown>)["color"] as Uint8ClampedArray | undefined;
       if (colorArr && colorArr.length >= 3) {
-        hexColor = rgbToHex(colorArr[0], colorArr[1], colorArr[2]);
+        hexColor = rgbToHex(colorArr[0]!, colorArr[1]!, colorArr[2]!);
       } else if (content.styles && item.fontName) {
         // Sometimes color is attached to the style or we can infer it, but usually it's in item.color
         // We fallback to #000000 if not found
@@ -140,11 +140,11 @@ export async function extractTextItems(
 
       rawItems.push({
         str: item.str,
-        x: tx[4],
-        y: tx[5] - fontHeight,
-        pdfX: item.transform[4],
-        pdfY: item.transform[5],
-        width: (item.width || 0) * Math.abs(viewport.transform[0]),
+        x: tx[4]!,
+        y: tx[5]! - fontHeight,
+        pdfX: item.transform[4]!,
+        pdfY: item.transform[5]!,
+        width: (item.width || 0) * Math.abs(viewport.transform[0]!),
         height: fontHeight,
         fontSize: pdfFontSize, // store PDF font size for pdf-lib
         fontName: item.fontName,
