@@ -6,7 +6,7 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import JSZip from "jszip";
 import type { OutputFile } from "./pdf-ops";
-import { renderPageToBlob, getPageCount, extractAllText } from "./pdf-renderer";
+import { renderPageToBlob, getPageCount, extractAllText, extractAllTextStructured } from "./pdf-renderer";
 
 const baseName = (file: File) => file.name.replace(/\.[^.]+$/, "");
 
@@ -207,30 +207,141 @@ export async function pdfToJpg(file: File, quality = 0.92): Promise<OutputFile[]
   return results;
 }
 
-/** Extract text from PDF and create a simple DOCX file. */
+/** Extract text from PDF and create a properly formatted DOCX file. */
 export async function pdfToWord(file: File): Promise<OutputFile[]> {
-  const texts = await extractAllText(file);
-  const paragraphs = texts
-    .map(
-      (t, i) =>
-        `<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Page ${i + 1}</w:t></w:r></w:p>` +
-        t
-          .split(/\n+/)
-          .map((line) => `<w:p><w:r><w:t xml:space="preserve">${escapeXml(line)}</w:t></w:r></w:p>`)
-          .join(""),
-    )
-    .join("");
+  const pages = await extractAllTextStructured(file);
+
+  // Determine the most common font size and font family to use as defaults
+  const fontSizeCounts = new Map<number, number>();
+  const fontFamilyCounts = new Map<string, number>();
+  for (const page of pages) {
+    for (const line of page) {
+      for (const run of line.runs) {
+        if (!run.text.trim()) continue;
+        const rounded = Math.round(run.fontSize);
+        fontSizeCounts.set(rounded, (fontSizeCounts.get(rounded) ?? 0) + 1);
+        fontFamilyCounts.set(run.fontFamily, (fontFamilyCounts.get(run.fontFamily) ?? 0) + 1);
+      }
+    }
+  }
+  let bodyFontSize = 12;
+  let bodyFontFamily = "Arial";
+  let maxCount = 0;
+  for (const [size, count] of fontSizeCounts) {
+    if (count > maxCount) { maxCount = count; bodyFontSize = size; }
+  }
+  maxCount = 0;
+  for (const [family, count] of fontFamilyCounts) {
+    if (count > maxCount) { maxCount = count; bodyFontFamily = family; }
+  }
+
+  // Build DOCX XML paragraphs
+  const allParagraphs: string[] = [];
+
+  for (let pageIdx = 0; pageIdx < pages.length; pageIdx++) {
+    const pageLines = pages[pageIdx] ?? [];
+
+    // Page break before every page except the first
+    if (pageIdx > 0) {
+      allParagraphs.push(
+        `<w:p><w:pPr><w:rPr></w:rPr></w:pPr><w:r><w:br w:type="page"/></w:r></w:p>`,
+      );
+    }
+
+    for (const line of pageLines) {
+      // Empty lines (no runs) become empty paragraphs for spacing
+      if (line.runs.length === 0) {
+        allParagraphs.push(`<w:p><w:pPr><w:spacing w:after="0"/></w:pPr></w:p>`);
+        continue;
+      }
+
+      // Check if any run on this line is a heading candidate
+      const firstRun = line.runs[0];
+      const avgFontSize =
+        line.runs.reduce((sum, r) => sum + r.fontSize, 0) / line.runs.length;
+      const isLargeFont = avgFontSize > bodyFontSize * 1.25;
+      const allBold = line.runs.every((r) => r.isBold);
+      const isHeading = isLargeFont && allBold;
+      const isSubheading = isLargeFont && !allBold;
+
+      let pStyle = "";
+      if (isHeading) {
+        pStyle = `<w:pStyle w:val="Heading1"/>`;
+      } else if (isSubheading) {
+        pStyle = `<w:pStyle w:val="Heading2"/>`;
+      }
+
+      // Paragraph spacing
+      const spacingBefore = line.isNewParagraph ? 120 : 0;
+      const pSpacing = `<w:spacing w:before="${spacingBefore}" w:after="40" w:line="276" w:lineRule="auto"/>`;
+
+      // Build one <w:r> per TextRun
+      const runsXml = line.runs
+        .map((run) => {
+          const wordFontSize = Math.round(run.fontSize * 2);
+          const boldPr = run.isBold ? `<w:b/><w:bCs/>` : "";
+          const italicPr = run.isItalic ? `<w:i/><w:iCs/>` : "";
+          const sizePr = `<w:sz w:val="${wordFontSize}"/><w:szCs w:val="${wordFontSize}"/>`;
+          const fontPr = `<w:rFonts w:ascii="${escapeXml(run.fontFamily)}" w:hAnsi="${escapeXml(run.fontFamily)}" w:cs="${escapeXml(run.fontFamily)}"/>`;
+          const rPr = `<w:rPr>${fontPr}${boldPr}${italicPr}${sizePr}</w:rPr>`;
+          return `<w:r>${rPr}<w:t xml:space="preserve">${escapeXml(run.text)}</w:t></w:r>`;
+        })
+        .join("");
+
+      allParagraphs.push(
+        `<w:p><w:pPr>${pStyle}${pSpacing}</w:pPr>${runsXml}</w:p>`,
+      );
+    }
+  }
 
   const docXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-<w:body>${paragraphs}</w:body>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<w:body>${allParagraphs.join("")}
+<w:sectPr>
+  <w:pgSz w:w="12240" w:h="15840"/>
+  <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>
+</w:sectPr>
+</w:body>
 </w:document>`;
 
+  // Styles definition with default font
+  const defaultFontXml = `<w:rFonts w:ascii="${escapeXml(bodyFontFamily)}" w:hAnsi="${escapeXml(bodyFontFamily)}" w:cs="${escapeXml(bodyFontFamily)}"/>`;
+  const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:docDefaults>
+    <w:rPrDefault>
+      <w:rPr>
+        ${defaultFontXml}
+        <w:sz w:val="${Math.round(bodyFontSize * 2)}"/>
+        <w:szCs w:val="${Math.round(bodyFontSize * 2)}"/>
+      </w:rPr>
+    </w:rPrDefault>
+  </w:docDefaults>
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
+    <w:name w:val="Normal"/>
+    <w:rPr>${defaultFontXml}<w:sz w:val="${Math.round(bodyFontSize * 2)}"/><w:szCs w:val="${Math.round(bodyFontSize * 2)}"/></w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading1">
+    <w:name w:val="heading 1"/>
+    <w:basedOn w:val="Normal"/>
+    <w:pPr><w:spacing w:before="240" w:after="120"/></w:pPr>
+    <w:rPr><w:b/><w:bCs/><w:sz w:val="32"/><w:szCs w:val="32"/></w:rPr>
+  </w:style>
+  <w:style w:type="paragraph" w:styleId="Heading2">
+    <w:name w:val="heading 2"/>
+    <w:basedOn w:val="Normal"/>
+    <w:pPr><w:spacing w:before="200" w:after="80"/></w:pPr>
+    <w:rPr><w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr>
+  </w:style>
+</w:styles>`;
+
   const zip = new JSZip();
-  zip.file("[Content_Types].xml", contentTypesDocx);
+  zip.file("[Content_Types].xml", contentTypesDocxWithStyles);
   zip.file("_rels/.rels", relsDocx);
-  zip.file("word/_rels/document.xml.rels", wordRels);
+  zip.file("word/_rels/document.xml.rels", wordRelsWithStyles);
   zip.file("word/document.xml", docXml);
+  zip.file("word/styles.xml", stylesXml);
 
   const blob = await zip.generateAsync({
     type: "blob",
@@ -372,6 +483,14 @@ const contentTypesDocx = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?
 <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
 </Types>`;
 
+const contentTypesDocxWithStyles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>`;
+
 const relsDocx = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
@@ -379,6 +498,11 @@ const relsDocx = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 
 const wordRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>`;
+
+const wordRelsWithStyles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`;
 
 const contentTypesXlsx = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
