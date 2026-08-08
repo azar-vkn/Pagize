@@ -1,24 +1,32 @@
-import * as pdfjsLib from "pdfjs-dist";
+import type { PDFDocumentProxy, PageViewport } from "pdfjs-dist";
 
-// Use the bundled worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  "pdfjs-dist/build/pdf.worker.min.mjs",
-  import.meta.url,
-).toString();
+// Dynamically load pdfjs to prevent SSR crashes (it accesses DOMMatrix on load)
+let pdfjsLib: typeof import("pdfjs-dist") | null = null;
+async function getPdfJs() {
+  if (pdfjsLib) return pdfjsLib;
+  if (typeof window === "undefined") return null;
+  pdfjsLib = await import("pdfjs-dist");
+  pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+    "pdfjs-dist/build/pdf.worker.min.mjs",
+    import.meta.url,
+  ).toString();
+  return pdfjsLib;
+}
 
-const docCache = new Map<string, pdfjsLib.PDFDocumentProxy>();
+const docCache = new Map<string, PDFDocumentProxy>();
 
-async function getDoc(file: File): Promise<pdfjsLib.PDFDocumentProxy> {
+async function getDoc(file: File): Promise<PDFDocumentProxy> {
+  const pdfjs = await getPdfJs();
+  if (!pdfjs) throw new Error("pdf.js cannot be used on the server");
+
   const key = `${file.name}-${file.size}-${file.lastModified}`;
   const cached = docCache.get(key);
   if (cached) return cached;
   const data = new Uint8Array(await file.arrayBuffer());
-  const doc = await pdfjsLib.getDocument({ data }).promise;
+  const doc = await pdfjs.getDocument({ data }).promise;
   docCache.set(key, doc);
   return doc;
 }
-
-/** Render a single PDF page to a data URL. */
 export async function renderPage(file: File, pageIndex: number, scale = 1): Promise<string> {
   const doc = await getDoc(file);
   const page = await doc.getPage(pageIndex + 1); // pdfjs is 1-based
@@ -111,7 +119,9 @@ function rgbToHex(r: number, g: number, b: number) {
 export async function extractTextItems(
   file: File,
   pageIndex: number,
-): Promise<{ items: TextItemPosition[]; viewport: pdfjsLib.PageViewport }> {
+): Promise<{ items: TextItemPosition[]; viewport: PageViewport }> {
+  const pdfjs = await getPdfJs();
+  if (!pdfjs) throw new Error("pdf.js cannot be used on the server");
   const doc = await getDoc(file);
   const page = await doc.getPage(pageIndex + 1);
   const viewport = page.getViewport({ scale: 1 });
@@ -122,7 +132,7 @@ export async function extractTextItems(
   for (const item of content.items) {
     if ("str" in item && item.str.trim() !== "") {
       // Ignore purely whitespace items
-      const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+      const tx = pdfjs.Util.transform(viewport.transform, item.transform);
       const fontHeight = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
       const pdfFontSize = Math.sqrt(
         item.transform[2] * item.transform[2] + item.transform[3] * item.transform[3],

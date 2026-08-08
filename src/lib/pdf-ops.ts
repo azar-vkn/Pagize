@@ -1,4 +1,5 @@
 import { PDFDocument, StandardFonts, degrees, rgb } from "pdf-lib";
+import { encryptPDF } from "@pdfsmaller/pdf-encrypt";
 
 export type OutputFile = { name: string; blob: Blob };
 
@@ -214,25 +215,29 @@ export async function cropPdf(
 }
 
 /**
- * "Protect" a PDF by embedding owner metadata.
- * Note: pdf-lib doesn't support real PDF encryption. We strip existing
- * info and mark it as "protected" so the user gets a re-saved file.
- * For real password protection you'd need a native crypto library.
+ * Protect a PDF with actual AES-256 encryption.
  */
 export async function protectPdf(
   file: File,
-  _userPassword: string,
+  userPassword: string,
   ownerPassword: string,
 ): Promise<OutputFile[]> {
-  const src = await load(file);
-  const doc = await PDFDocument.create();
-  const pages = await doc.copyPages(src, src.getPageIndices());
-  pages.forEach((p) => doc.addPage(p));
-  // Mark document with metadata — real encryption not supported in pdf-lib
-  doc.setProducer("Pagize (Protected)");
-  doc.setCreator("Pagize");
-  doc.setSubject(`Protected by owner: ${ownerPassword ? "yes" : "no"}`);
-  return [await save(doc, `${baseName(file)}-protected.pdf`)];
+  const pdfBytes = new Uint8Array(await file.arrayBuffer());
+
+  // Use @pdfsmaller/pdf-encrypt for real encryption
+  const encrypted = await encryptPDF(pdfBytes, userPassword, {
+    ownerPassword: ownerPassword || userPassword, // Fallback if owner is empty
+    allowPrinting: false,
+    allowCopying: false,
+    allowModifying: false,
+  });
+
+  return [
+    {
+      name: `${baseName(file)}-protected.pdf`,
+      blob: new Blob([encrypted as unknown as BlobPart], { type: "application/pdf" }),
+    },
+  ];
 }
 
 /** Remove password protection by re-saving (we already load with ignoreEncryption). */
