@@ -875,120 +875,23 @@ function ToolPage() {
           </div>
         );
       case "edit-pdf": {
-        const currentEdit = opts.textReplacements.find(
-          r => r.pageIndex === opts.selectedTextPageIndex && r.x === opts.selectedTextItem?.x && r.y === opts.selectedTextItem?.y
-        );
-        const editingText = currentEdit ? currentEdit.newText : opts.selectedTextItem?.str ?? "";
-
         return (
           <div className="space-y-4">
             <p className="text-sm text-muted-foreground">
-              Select any text in the preview to edit it here. Replaced text will be whited out and drawn over.
+              Click any text block in the preview to seamlessly edit it in-place. The text will
+              perfectly match the original dimensions.
             </p>
-            
-            {opts.selectedTextItem ? (
-              <div className="space-y-3 rounded-xl border bg-primary/5 p-4 outline outline-1 outline-primary">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-semibold text-primary">Edit Selection</h3>
-                  {currentEdit && (
-                    <Button 
-                      variant="ghost" 
-                      size="sm" 
-                      className="h-7 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive"
-                      onClick={() => {
-                        set("textReplacements", opts.textReplacements.filter(r => r !== currentEdit));
-                      }}
-                    >
-                      <RotateCcw className="mr-1 size-3" /> Revert
-                    </Button>
-                  )}
-                </div>
-                <Textarea 
-                  className="min-h-[100px] resize-y rounded-lg font-sans text-sm"
-                  value={editingText}
-                  onChange={(e) => {
-                    const newText = e.target.value;
-                    const item = opts.selectedTextItem!;
-                    
-                    const newReplacements = [...opts.textReplacements];
-                    const existingIdx = newReplacements.findIndex(
-                      r => r.pageIndex === opts.selectedTextPageIndex && r.x === item.x && r.y === item.y
-                    );
-                    
-                    if (newText === item.str && (currentEdit?.fontFamily || "Helvetica") === "Helvetica") {
-                      if (existingIdx >= 0) newReplacements.splice(existingIdx, 1);
-                    } else {
-                      const rep = {
-                        pageIndex: opts.selectedTextPageIndex,
-                        x: item.x,
-                        y: item.y,
-                        width: item.width,
-                        height: item.height,
-                        fontSize: item.fontSize,
-                        originalText: item.str,
-                        newText,
-                        fontFamily: currentEdit?.fontFamily || "Helvetica",
-                      };
-                      if (existingIdx >= 0) newReplacements[existingIdx] = rep;
-                      else newReplacements.push(rep as any);
-                    }
-                    set("textReplacements", newReplacements);
-                  }}
-                />
-                
-                <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Font Match</Label>
-                  <Select 
-                    value={currentEdit?.fontFamily || "Helvetica"}
-                    onValueChange={(val) => {
-                      const item = opts.selectedTextItem!;
-                      const newReplacements = [...opts.textReplacements];
-                      const existingIdx = newReplacements.findIndex(
-                        r => r.pageIndex === opts.selectedTextPageIndex && r.x === item.x && r.y === item.y
-                      );
-                      
-                      const rep = {
-                        pageIndex: opts.selectedTextPageIndex,
-                        x: item.x,
-                        y: item.y,
-                        width: item.width,
-                        height: item.height,
-                        fontSize: item.fontSize,
-                        originalText: item.str,
-                        newText: editingText,
-                        fontFamily: val as any,
-                      };
-                      
-                      if (existingIdx >= 0) newReplacements[existingIdx] = rep;
-                      else newReplacements.push(rep);
-                      
-                      set("textReplacements", newReplacements);
-                    }}
-                  >
-                    <SelectTrigger className="h-8 text-xs font-medium">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Helvetica">Helvetica (Sans-Serif)</SelectItem>
-                      <SelectItem value="TimesRoman">Times New Roman (Serif)</SelectItem>
-                      <SelectItem value="Courier">Courier (Monospace)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-            ) : (
-              <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
-                Click a text block on the page to edit it.
-              </div>
-            )}
-
             {opts.textReplacements.length > 0 && (
               <div className="rounded-xl border bg-muted/30 p-4">
-                <h3 className="mb-2 text-sm font-medium">Pending Edits ({opts.textReplacements.length})</h3>
+                <h3 className="mb-2 text-sm font-medium">
+                  Pending Edits ({opts.textReplacements.length})
+                </h3>
                 <ul className="space-y-2 text-xs">
                   {opts.textReplacements.map((r, i) => (
                     <li key={i} className="flex flex-col gap-1 rounded border bg-background p-2">
-                      <span className="truncate font-medium text-muted-foreground line-through decoration-destructive">{r.originalText}</span>
+                      <span className="truncate font-medium text-muted-foreground line-through decoration-destructive">
+                        {r.originalText}
+                      </span>
                       <span className="truncate font-medium text-emerald-600">{r.newText}</span>
                     </li>
                   ))}
@@ -1165,11 +1068,25 @@ function ToolPage() {
                   <PdfTextEditor
                     file={files[0]}
                     edits={opts.textReplacements}
-                    selectedItemKey={opts.selectedTextItemIdx >= 0 ? `${opts.selectedTextPageIndex}-${opts.selectedTextItemIdx}` : null}
-                    onSelectTextItem={(item, pageIdx, itemIdx) => {
-                      set("selectedTextItem", item);
-                      set("selectedTextPageIndex", pageIdx);
-                      set("selectedTextItemIdx", itemIdx);
+                    onEdit={(newEdit) => {
+                      if (!newEdit) return; // Note: removing is handled by passing newText === originalText
+                      setOpts((prev) => {
+                        const existingIdx = prev.textReplacements.findIndex(
+                          (r) =>
+                            r.pageIndex === newEdit.pageIndex &&
+                            r.x === newEdit.x &&
+                            r.y === newEdit.y,
+                        );
+
+                        const newReps = [...prev.textReplacements];
+                        if (newEdit.newText === newEdit.originalText) {
+                          if (existingIdx >= 0) newReps.splice(existingIdx, 1);
+                        } else {
+                          if (existingIdx >= 0) newReps[existingIdx] = newEdit;
+                          else newReps.push(newEdit);
+                        }
+                        return { ...prev, textReplacements: newReps };
+                      });
                     }}
                   />
                 </div>

@@ -353,14 +353,21 @@ export interface TextItemPosition {
   str: string;
   x: number;
   y: number;
+  pdfX: number;
+  pdfY: number;
   width: number;
   height: number;
   fontSize: number;
   fontName: string;
+  color: string; // hex color
   pageIndex: number;
 }
 
-/** Extract text items with exact positional data. */
+function rgbToHex(r: number, g: number, b: number) {
+  return "#" + [r, g, b].map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+/** Extract text items with exact positional data and smart grouping. */
 export async function extractTextItems(
   file: File,
   pageIndex: number,
@@ -370,30 +377,84 @@ export async function extractTextItems(
   const viewport = page.getViewport({ scale: 1 });
   const content = await page.getTextContent();
 
-  const items: TextItemPosition[] = [];
+  const rawItems: TextItemPosition[] = [];
 
   for (const item of content.items) {
-    if ("str" in item) {
-      // The transform matrix is [scaleX, skewX, skewY, scaleY, tx, ty]
+    if ("str" in item && item.str.trim() !== "") {
+      // Ignore purely whitespace items
       const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
-      // fontHeight is usually scaleY
       const fontHeight = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
-      // The font width
-      const fontWidth = Math.sqrt(tx[0] * tx[0] + tx[1] * tx[1]);
+      const pdfFontSize = Math.sqrt(
+        item.transform[2] * item.transform[2] + item.transform[3] * item.transform[3],
+      );
 
-      items.push({
+      // Attempt to extract color (pdf.js >v3 exposes color as RGB Uint8ClampedArray)
+      let hexColor = "#000000";
+      const colorArr = (item as Record<string, unknown>).color as Uint8ClampedArray | undefined;
+      if (colorArr && colorArr.length >= 3) {
+        hexColor = rgbToHex(colorArr[0], colorArr[1], colorArr[2]);
+      } else if (content.styles && item.fontName) {
+        // Sometimes color is attached to the style or we can infer it, but usually it's in item.color
+        // We fallback to #000000 if not found
+      }
+
+      rawItems.push({
         str: item.str,
         x: tx[4],
-        // tx[5] is the baseline y coordinate. We adjust it for the bounding box.
         y: tx[5] - fontHeight,
-        width: item.width * Math.abs(viewport.transform[0] ?? 1),
+        pdfX: item.transform[4],
+        pdfY: item.transform[5],
+        width: (item.width || 0) * Math.abs(viewport.transform[0] ?? 1),
         height: fontHeight,
-        fontSize: fontHeight,
+        fontSize: pdfFontSize, // store PDF font size for pdf-lib
         fontName: item.fontName,
+        color: hexColor,
         pageIndex,
       });
     }
   }
 
-  return { items, viewport };
+  // Sort items top-to-bottom (canvas Y ascending) and then left-to-right (canvas X ascending)
+  rawItems.sort((a, b) => {
+    if (Math.abs(a.y - b.y) > 5) return a.y - b.y;
+    return a.x - b.x;
+  });
+
+  const groupedItems: TextItemPosition[] = [];
+  let currentGroup: TextItemPosition | null = null;
+
+  for (const item of rawItems) {
+    if (!currentGroup) {
+      currentGroup = { ...item };
+      continue;
+    }
+
+    // Check if on same line (Y is very close)
+    const sameLine = Math.abs(currentGroup.y - item.y) < 5;
+    // Check if adjacent (X is close to the end of currentGroup)
+    const gap = item.x - (currentGroup.x + currentGroup.width);
+    const adjacent = gap >= -2 && gap < currentGroup.height * 2; // threshold based on font size (height)
+
+    if (sameLine && adjacent) {
+      // Merge
+      // Calculate missing space to insert a space if necessary
+      const needsSpace =
+        gap > currentGroup.height * 0.2 &&
+        !currentGroup.str.endsWith(" ") &&
+        !item.str.startsWith(" ");
+      currentGroup.str += (needsSpace ? " " : "") + item.str;
+      // Expand width to encompass the new item
+      currentGroup.width = item.x + item.width - currentGroup.x;
+      // Do not change X or Y since it's the start of the group
+    } else {
+      groupedItems.push(currentGroup);
+      currentGroup = { ...item };
+    }
+  }
+
+  if (currentGroup) {
+    groupedItems.push(currentGroup);
+  }
+
+  return { items: groupedItems, viewport };
 }
