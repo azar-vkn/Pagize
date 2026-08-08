@@ -126,7 +126,12 @@ export function PdfPreview({
                 src={thumb}
                 alt={`Page ${pageIdx + 1}`}
                 className="w-full object-contain transition-transform"
-                style={{ transform: rotationAngle ? `rotate(${rotationAngle}deg)` : undefined }}
+                style={{
+                  transform:
+                    rotationAngle && (!selectedPages || selectedPages.size === 0 || isSelected)
+                      ? `rotate(${rotationAngle}deg)`
+                      : undefined,
+                }}
               />
               {/* Crop overlay */}
               {cropMargins && (

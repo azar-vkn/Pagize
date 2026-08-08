@@ -1,6 +1,6 @@
 import { createFileRoute, Link, notFound } from "@tanstack/react-router";
 import { ArrowRight, ArrowLeft, Download, Loader2, RotateCcw, Type, Palette } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { IslandNav } from "@/components/IslandNav";
 import { SiteFooter } from "@/components/SiteFooter";
 import { DropZone, formatBytes } from "@/components/DropZone";
@@ -41,6 +41,7 @@ import {
   type NumberPosition,
   type OutputFile,
   type TextReplacement,
+  parsePageRanges,
 } from "@/lib/pdf-ops";
 import type { TextItemPosition } from "@/lib/pdf-renderer";
 import { cn } from "@/lib/utils";
@@ -211,8 +212,6 @@ function ToolPage() {
   const [results, setResults] = useState<OutputFile[] | null>(null);
   // For organize / reorder
   const [pageOrder, setPageOrder] = useState<number[] | null>(null);
-  // For page selection (remove/extract)
-  const [selectedPages, setSelectedPages] = useState<Set<number>>(new Set());
   // Signature canvas
   const sigCanvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
@@ -226,7 +225,6 @@ function ToolPage() {
     setError(null);
     setPages(null);
     setPageOrder(null);
-    setSelectedPages(new Set());
     setOpts(defaults);
   }, [slug]);
 
@@ -253,14 +251,33 @@ function ToolPage() {
     };
   }, [files, tool.accepts, slug]);
 
-  const togglePage = useCallback((pageIdx: number) => {
-    setSelectedPages((prev) => {
-      const next = new Set(prev);
-      if (next.has(pageIdx)) next.delete(pageIdx);
-      else next.add(pageIdx);
-      return next;
-    });
-  }, []);
+  const selectedPages = useMemo(() => {
+    if (!opts.ranges.trim() || !pages) return new Set<number>();
+    return new Set(parsePageRanges(opts.ranges, pages));
+  }, [opts.ranges, pages]);
+
+  const togglePage = useCallback(
+    (pageIdx: number) => {
+      if (!pages) return;
+      const current = new Set(parsePageRanges(opts.ranges, pages));
+      if (current.has(pageIdx)) current.delete(pageIdx);
+      else current.add(pageIdx);
+
+      const newRanges = Array.from(current)
+        .map((p) => p + 1)
+        .sort((a, b) => a - b)
+        .join(",");
+
+      setOpts((prev) => ({ ...prev, ranges: newRanges }));
+    },
+    [opts.ranges, pages],
+  );
+
+  const handlePageClick = (pageIdx: number) => {
+    if (slug === "remove-pages" || slug === "extract-pages" || slug === "rotate-pdf") {
+      togglePage(pageIdx);
+    }
+  };
 
   // Signature drawing handlers
   const startDraw = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -320,32 +337,19 @@ function ToolPage() {
           out = await splitPdf(file, opts.splitMode, opts.ranges);
           break;
         case "remove-pages": {
-          const rangeStr =
-            selectedPages.size > 0
-              ? [...selectedPages]
-                  .map((p) => p + 1)
-                  .sort((a, b) => a - b)
-                  .join(",")
-              : opts.ranges;
-          if (!rangeStr) throw new Error("Select pages to remove.");
-          out = await selectPages(file, rangeStr, "remove");
+          if (!opts.ranges) throw new Error("Select pages to remove.");
+          out = await selectPages(file, opts.ranges, "remove");
           break;
         }
         case "extract-pages": {
-          const rangeStr =
-            selectedPages.size > 0
-              ? [...selectedPages]
-                  .map((p) => p + 1)
-                  .sort((a, b) => a - b)
-                  .join(",")
-              : opts.ranges;
-          if (!rangeStr) throw new Error("Select pages to extract.");
-          out = await selectPages(file, rangeStr, "keep");
+          if (!opts.ranges) throw new Error("Select pages to extract.");
+          out = await selectPages(file, opts.ranges, "keep");
           break;
         }
-        case "rotate-pdf":
+        case "rotate-pdf": {
           out = await rotatePdf(file, opts.angle, opts.ranges);
           break;
+        }
         case "organize-pages":
           if (!pageOrder) throw new Error("Reorder the pages first.");
           out = await organizePages(file, pageOrder);
@@ -563,13 +567,24 @@ function ToolPage() {
                 value={opts.angle}
                 onChange={(v) => set("angle", v)}
                 options={[
+                  { value: 0, label: "Default" },
                   { value: 90, label: "90°" },
                   { value: 180, label: "180°" },
                   { value: 270, label: "270°" },
                 ]}
               />
             </div>
-            {rangeField("Leave empty to rotate every page.")}
+            <div className="space-y-4">
+              {rangeField("Leave empty to rotate every page.")}
+              {selectedPages.size > 0 && (
+                <p className="text-sm font-medium text-blue-600">
+                  {selectedPages.size} page{selectedPages.size > 1 ? "s" : ""} selected for rotation
+                </p>
+              )}
+              <p className="text-xs text-muted-foreground">
+                Click page thumbnails to select specific pages to rotate.
+              </p>
+            </div>
           </div>
         );
       case "organize-pages":
@@ -1052,7 +1067,6 @@ function ToolPage() {
                 onClick={() => {
                   setResults(null);
                   setFiles([]);
-                  setSelectedPages(new Set());
                   setPageOrder(null);
                 }}
               >
@@ -1100,7 +1114,6 @@ function ToolPage() {
                       onChange={(f) => {
                         setFiles(f);
                         setError(null);
-                        setSelectedPages(new Set());
                       }}
                       label={tool.multiple ? "Drop your files here" : "Drop your file here"}
                     />
@@ -1115,14 +1128,18 @@ function ToolPage() {
                       <PdfPreview
                         file={files[0]}
                         selectedPages={
-                          slug === "remove-pages" || slug === "extract-pages"
+                          slug === "remove-pages" ||
+                          slug === "extract-pages" ||
+                          slug === "rotate-pdf"
                             ? selectedPages
                             : undefined
                         }
                         selectionMode={slug === "remove-pages" ? "remove" : "keep"}
                         onPageClick={
-                          slug === "remove-pages" || slug === "extract-pages"
-                            ? togglePage
+                          slug === "remove-pages" ||
+                          slug === "extract-pages" ||
+                          slug === "rotate-pdf"
+                            ? handlePageClick
                             : undefined
                         }
                         rotationAngle={slug === "rotate-pdf" ? opts.angle : 0}
