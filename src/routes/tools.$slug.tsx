@@ -40,6 +40,7 @@ import {
   splitPdf,
   unlockPdf,
   watermarkPdf,
+  type NumberPosition,
   type OutputFile,
   type TextReplacement,
   parsePageRanges,
@@ -1050,7 +1051,6 @@ function ToolPage() {
                 onClick={() => {
                   setResults(null);
                   setFiles([]);
-                  setSelectedPages(new Set());
                   setPageOrder(null);
                 }}
               >
@@ -1098,7 +1098,6 @@ function ToolPage() {
                       onChange={(f) => {
                         setFiles(f);
                         setError(null);
-                        setSelectedPages(new Set());
                       }}
                       label={tool.multiple ? "Drop your files here" : "Drop your file here"}
                     />
