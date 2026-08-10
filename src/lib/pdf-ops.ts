@@ -368,70 +368,136 @@ export async function editPdfAddText(
 
 export interface TextReplacement {
   pageIndex: number;
-  x: number; // canvas Y (used for uniqueness matching in UI)
-  y: number;
-  pdfX: number; // actual PDF coordinate
-  pdfY: number; // actual PDF coordinate (baseline)
-  width: number; // in PDF space
-  height: number; // in PDF space
+  x: number; // canvas X (used for uniqueness matching in UI)
+  y: number; // canvas Y
+  pdfX: number; // actual PDF coordinate (baseline X)
+  pdfY: number; // actual PDF coordinate (baseline Y)
+  pdfWidth: number; // in PDF space
+  width: number; // in canvas space
+  height: number; // in canvas space
   fontSize: number; // in PDF space
   fontFamily?: "Helvetica" | "TimesRoman" | "Courier";
+  isBold?: boolean;
+  isItalic?: boolean;
   color?: string; // hex color e.g., "#000000"
+  bgColor?: string; // hex background color e.g., "#ffffff", "#f3f4f6"
   originalText: string;
   newText: string;
 }
 
+/** Resolve the correct StandardFont key for a given family + weight + style. */
+function resolveStandardFont(
+  family: "Helvetica" | "TimesRoman" | "Courier",
+  bold: boolean,
+  italic: boolean,
+): StandardFonts {
+  if (family === "Courier") {
+    if (bold && italic) return StandardFonts.CourierBoldOblique;
+    if (bold) return StandardFonts.CourierBold;
+    if (italic) return StandardFonts.CourierOblique;
+    return StandardFonts.Courier;
+  }
+  if (family === "TimesRoman") {
+    if (bold && italic) return StandardFonts.TimesRomanBoldItalic;
+    if (bold) return StandardFonts.TimesRomanBold;
+    if (italic) return StandardFonts.TimesRomanItalic;
+    return StandardFonts.TimesRoman;
+  }
+  // Helvetica
+  if (bold && italic) return StandardFonts.HelveticaBoldOblique;
+  if (bold) return StandardFonts.HelveticaBold;
+  if (italic) return StandardFonts.HelveticaOblique;
+  return StandardFonts.Helvetica;
+}
+
+/** Helper to parse a hex color string into pdf-lib RGB values */
+function parseHexColor(hex: string | undefined, defaultHex: string) {
+  const target = (hex || defaultHex).replace("#", "").trim();
+  let cleanHex = target;
+  if (cleanHex.length === 3) {
+    cleanHex = cleanHex
+      .split("")
+      .map((c) => c + c)
+      .join("");
+  }
+  const rVal = parseInt(cleanHex.substring(0, 2) || "00", 16) / 255;
+  const gVal = parseInt(cleanHex.substring(2, 4) || "00", 16) / 255;
+  const bVal = parseInt(cleanHex.substring(4, 6) || "00", 16) / 255;
+  return rgb(isNaN(rVal) ? 0 : rVal, isNaN(gVal) ? 0 : gVal, isNaN(bVal) ? 0 : bVal);
+}
+
 /**
- * Replace text on a page by whiting out the original bounding box
- * and drawing the new text over it.
+ * Replace text on a page by covering the original bounding box with the matching
+ * background color and drawing the new text over it with precise font metrics.
  */
 export async function editPdfReplaceText(
   file: File,
   replacements: TextReplacement[],
 ): Promise<OutputFile[]> {
   const doc = await load(file);
-  const fonts = {
-    Helvetica: await doc.embedFont(StandardFonts.Helvetica),
-    TimesRoman: await doc.embedFont(StandardFonts.TimesRoman),
-    Courier: await doc.embedFont(StandardFonts.Courier),
-  };
+
+  // Embed all 12 standard font variants so we can match bold/italic
+  const fontCache = new Map<StandardFonts, Awaited<ReturnType<typeof doc.embedFont>>>();
+  async function getFont(key: StandardFonts) {
+    let f = fontCache.get(key);
+    if (!f) {
+      f = await doc.embedFont(key);
+      fontCache.set(key, f);
+    }
+    return f;
+  }
 
   for (const r of replacements) {
+    if (r.newText === r.originalText) continue;
     const page = doc.getPage(r.pageIndex);
-    const font = fonts[r.fontFamily || "Helvetica"];
+    const family = r.fontFamily || "Helvetica";
+    const bold = r.isBold ?? false;
+    const italic = r.isItalic ?? false;
+    const fontKey = resolveStandardFont(family, bold, italic);
+    const font = await getFont(fontKey);
+    const fontSize = r.fontSize || 12;
 
     const lines = r.newText.split("\n");
-    const newHeight = Math.max(r.height, lines.length * r.fontSize);
+    const origLines = r.originalText.split("\n");
 
-    // Draw white rectangle to hide old text with slight padding
+    // Calculate required width to cover: must cover at least the original text width or pdfWidth
+    const origTextWidth = font.widthOfTextAtSize(r.originalText, fontSize);
+    const newTextWidth = Math.max(...lines.map((l) => font.widthOfTextAtSize(l, fontSize)));
+    const rectWidth = Math.max(r.pdfWidth || 0, origTextWidth, newTextWidth) + 3;
+
+    const lineHeight = fontSize * 1.15;
+    const numLines = Math.max(lines.length, origLines.length);
+    const rectHeight = (numLines - 1) * lineHeight + fontSize * 1.12;
+    const rectY = r.pdfY - (numLines - 1) * lineHeight - fontSize * 0.22;
+
+    // Parse background color to seamlessly blend with table rows, banners, or pages
+    const bgRgb = parseHexColor(r.bgColor, "#ffffff");
+
+    // Draw background rectangle to seamlessly hide original text
     page.drawRectangle({
-      x: r.pdfX - 2,
-      y: r.pdfY - (newHeight - r.fontSize) - r.fontSize * 0.25,
-      width: Math.max(r.width + 4, font.widthOfTextAtSize(lines[0] || "", r.fontSize) + 4),
-      height: newHeight + r.fontSize * 0.5,
-      color: rgb(1, 1, 1),
-      borderColor: rgb(1, 1, 1),
+      x: r.pdfX - 1.5,
+      y: rectY,
+      width: rectWidth,
+      height: rectHeight,
+      color: bgRgb,
       borderWidth: 0,
     });
 
-    // Parse hex color or default to black
-    const hexColor = r.color || "#000000";
-    const cleanHex = hexColor.replace("#", "");
-    const colorRgb = rgb(
-      parseInt(cleanHex.substring(0, 2), 16) / 255,
-      parseInt(cleanHex.substring(2, 4), 16) / 255,
-      parseInt(cleanHex.substring(4, 6), 16) / 255,
-    );
+    // Parse text color
+    const colorRgb = parseHexColor(r.color, "#000000");
 
-    // Draw new text
-    page.drawText(r.newText, {
-      x: r.pdfX,
-      y: r.pdfY,
-      size: r.fontSize,
-      font,
-      color: colorRgb,
-      lineHeight: r.fontSize,
-    });
+    // Draw each line of new text
+    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+      const lineText = lines[lineIdx] ?? "";
+      if (!lineText) continue;
+      page.drawText(lineText, {
+        x: r.pdfX,
+        y: r.pdfY - lineIdx * lineHeight,
+        size: fontSize,
+        font,
+        color: colorRgb,
+      });
+    }
   }
 
   return [await save(doc, `${baseName(file)}-edited.pdf`)];

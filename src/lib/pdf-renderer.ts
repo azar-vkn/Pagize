@@ -103,11 +103,19 @@ export interface TextItemPosition {
   y: number;
   pdfX: number;
   pdfY: number;
+  pdfWidth: number;
   width: number;
   height: number;
   fontSize: number;
   fontName: string;
+  /** Generic family from pdf.js styles: "serif", "sans-serif", "monospace", etc. */
+  fontFamily: string;
+  /** Whether the font appears to be bold (detected from font name). */
+  isBold: boolean;
+  /** Whether the font appears to be italic/oblique (detected from font name). */
+  isItalic: boolean;
   color: string; // hex color
+  bgColor: string; // hex background color (e.g., #ffffff, #f3f4f6, #f7f7f7)
   pageIndex: number;
 }
 
@@ -115,7 +123,116 @@ function rgbToHex(r: number, g: number, b: number) {
   return "#" + [r, g, b].map((x) => x.toString(16).padStart(2, "0")).join("");
 }
 
-/** Extract text items with exact positional data and smart grouping. */
+/**
+ * Sample the exact text color AND background color from rendered canvas pixels
+ * by inspecting the bounding box and outer margins.
+ */
+function sampleTextAndBgColor(
+  imgData: ImageData,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+): { color: string; bgColor: string } {
+  const data = imgData.data;
+  const imgW = imgData.width;
+  const imgH = imgData.height;
+
+  const startX = Math.max(0, Math.floor(x));
+  const endX = Math.min(imgW - 1, Math.ceil(x + width));
+  const startY = Math.max(0, Math.floor(y));
+  const endY = Math.min(imgH - 1, Math.ceil(y + height));
+
+  if (endX <= startX || endY <= startY) {
+    return { color: "#000000", bgColor: "#ffffff" };
+  }
+
+  // Sample points just outside and at corners of the text box to get the pure background color
+  const bgSamplePoints: [number, number][] = [
+    [startX, Math.max(0, startY - 2)],
+    [endX, Math.max(0, startY - 2)],
+    [Math.floor((startX + endX) / 2), Math.max(0, startY - 2)],
+    [startX, Math.min(imgH - 1, endY + 2)],
+    [endX, Math.min(imgH - 1, endY + 2)],
+    [Math.floor((startX + endX) / 2), Math.min(imgH - 1, endY + 2)],
+    [Math.max(0, startX - 2), Math.floor((startY + endY) / 2)],
+    [Math.min(imgW - 1, endX + 2), Math.floor((startY + endY) / 2)],
+    [startX, startY],
+    [endX, startY],
+    [startX, endY],
+    [endX, endY],
+  ];
+
+  let bgRSum = 0;
+  let bgGSum = 0;
+  let bgBSum = 0;
+  let validBgPoints = 0;
+
+  for (const [px, py] of bgSamplePoints) {
+    const idx = (py * imgW + px) * 4;
+    if (data[idx + 3]! >= 128) {
+      bgRSum += data[idx]!;
+      bgGSum += data[idx + 1]!;
+      bgBSum += data[idx + 2]!;
+      validBgPoints++;
+    }
+  }
+
+  const bgR = validBgPoints > 0 ? bgRSum / validBgPoints : 255;
+  const bgG = validBgPoints > 0 ? bgGSum / validBgPoints : 255;
+  const bgB = validBgPoints > 0 ? bgBSum / validBgPoints : 255;
+  const hexBg = rgbToHex(Math.round(bgR), Math.round(bgG), Math.round(bgB));
+
+  // Collect candidate glyph pixels (those with significant contrast from background)
+  type PixelCandidate = { r: number; g: number; b: number; dist: number };
+  const candidates: PixelCandidate[] = [];
+
+  for (let py = startY; py <= endY; py++) {
+    for (let px = startX; px <= endX; px++) {
+      const idx = (py * imgW + px) * 4;
+      if (data[idx + 3]! < 128) continue; // skip transparent
+
+      const r = data[idx]!;
+      const g = data[idx + 1]!;
+      const b = data[idx + 2]!;
+      const dist = Math.hypot(r - bgR, g - bgG, b - bgB);
+
+      // Contrast threshold to ignore subtle antialiasing / background noise
+      if (dist > 30) {
+        candidates.push({ r, g, b, dist });
+      }
+    }
+  }
+
+  if (candidates.length === 0) {
+    const isBgDark = (bgR + bgG + bgB) / 3 < 128;
+    return { color: isBgDark ? "#ffffff" : "#000000", bgColor: hexBg };
+  }
+
+  // Sort by contrast distance descending (core text glyph pixels)
+  candidates.sort((a, b) => b.dist - a.dist);
+
+  // Average the top 20% most saturated / highest contrast pixels
+  const topCount = Math.max(1, Math.floor(candidates.length * 0.2));
+  let sumR = 0;
+  let sumG = 0;
+  let sumB = 0;
+  for (let i = 0; i < topCount; i++) {
+    sumR += candidates[i]!.r;
+    sumG += candidates[i]!.g;
+    sumB += candidates[i]!.b;
+  }
+
+  const hexColor = rgbToHex(
+    Math.round(sumR / topCount),
+    Math.round(sumG / topCount),
+    Math.round(sumB / topCount),
+  );
+
+  return { color: hexColor, bgColor: hexBg };
+}
+
+/** Extract text items with exact positional data, color/bg detection, and smart grouping. */
 export async function extractTextItems(
   file: File,
   pageIndex: number,
@@ -127,26 +244,76 @@ export async function extractTextItems(
   const viewport = page.getViewport({ scale: 1 });
   const content = await page.getTextContent();
 
+  // Render page at scale 1 to sample real pixel colors
+  let imgData: ImageData | null = null;
+  if (typeof document !== "undefined") {
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(viewport.width);
+      canvas.height = Math.round(viewport.height);
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      if (ctx) {
+        await page.render({ canvasContext: ctx, canvas, viewport }).promise;
+        imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      }
+    } catch (e) {
+      console.warn("Could not sample canvas colors:", e);
+    }
+  }
+
   const rawItems: TextItemPosition[] = [];
 
   for (const item of content.items) {
     if ("str" in item && item.str.trim() !== "") {
-      // Ignore purely whitespace items
       const tx = pdfjs.Util.transform(viewport.transform, item.transform);
-      const fontHeight = Math.sqrt(tx[2] * tx[2] + tx[3] * tx[3]);
-      const pdfFontSize = Math.sqrt(
-        item.transform[2] * item.transform[2] + item.transform[3] * item.transform[3],
-      );
+      const pdfFontSize =
+        Math.hypot(item.transform[2] ?? 0, item.transform[3] ?? 0) ||
+        Math.hypot(item.transform[0] ?? 0, item.transform[1] ?? 0) ||
+        12;
+      const fontHeight =
+        Math.hypot(tx[2] ?? 0, tx[3] ?? 0) || Math.hypot(tx[0] ?? 0, tx[1] ?? 0) || pdfFontSize;
+      const pdfWidth = item.width || 0;
+      const canvasWidth =
+        pdfWidth * Math.hypot(viewport.transform[0] ?? 1, viewport.transform[1] ?? 0);
 
-      // Attempt to extract color (pdf.js >v3 exposes color as RGB Uint8ClampedArray)
+      // Extract accurate color & background color from rendered canvas pixels
       let hexColor = "#000000";
-      const colorArr = (item as Record<string, unknown>)["color"] as Uint8ClampedArray | undefined;
-      if (colorArr && colorArr.length >= 3) {
-        hexColor = rgbToHex(colorArr[0]!, colorArr[1]!, colorArr[2]!);
-      } else if (content.styles && item.fontName) {
-        // Sometimes color is attached to the style or we can infer it, but usually it's in item.color
-        // We fallback to #000000 if not found
+      let hexBg = "#ffffff";
+      if (imgData) {
+        const sampled = sampleTextAndBgColor(
+          imgData,
+          tx[4]!,
+          tx[5]! - fontHeight,
+          canvasWidth,
+          fontHeight,
+        );
+        hexColor = sampled.color;
+        hexBg = sampled.bgColor;
       }
+
+      // Extract fontFamily from pdf.js styles map (serif / sans-serif / monospace)
+      const styleEntry = (content.styles as Record<string, { fontFamily?: string }> | undefined)?.[
+        item.fontName
+      ];
+      const fontFamily = styleEntry?.fontFamily || "sans-serif";
+
+      // Detect bold/italic from font name (e.g., "ArialMT-Bold", "TimesNewRoman-BoldItalic")
+      const fnLower = (item.fontName || "").toLowerCase();
+      const isBold =
+        fnLower.includes("bold") ||
+        fnLower.includes("heavy") ||
+        fnLower.includes("black") ||
+        fnLower.includes("semibold") ||
+        fnLower.includes("semi-bold") ||
+        fnLower.includes("demi") ||
+        fnLower.includes("medium") ||
+        fnLower.includes("bld");
+      const isItalic =
+        fnLower.includes("italic") ||
+        fnLower.includes("oblique") ||
+        fnLower.includes("slant") ||
+        fnLower.includes("ital") ||
+        fnLower.includes("-it");
 
       rawItems.push({
         str: item.str,
@@ -154,11 +321,16 @@ export async function extractTextItems(
         y: tx[5]! - fontHeight,
         pdfX: item.transform[4]!,
         pdfY: item.transform[5]!,
-        width: (item.width || 0) * Math.abs(viewport.transform[0]!),
+        pdfWidth,
+        width: canvasWidth,
         height: fontHeight,
-        fontSize: pdfFontSize, // store PDF font size for pdf-lib
+        fontSize: pdfFontSize,
         fontName: item.fontName,
+        fontFamily,
+        isBold,
+        isItalic,
         color: hexColor,
+        bgColor: hexBg,
         pageIndex,
       });
     }
@@ -166,7 +338,7 @@ export async function extractTextItems(
 
   // Sort items top-to-bottom (canvas Y ascending) and then left-to-right (canvas X ascending)
   rawItems.sort((a, b) => {
-    if (Math.abs(a.y - b.y) > 5) return a.y - b.y;
+    if (Math.abs(a.y - b.y) > 4) return a.y - b.y;
     return a.x - b.x;
   });
 
@@ -180,22 +352,28 @@ export async function extractTextItems(
     }
 
     // Check if on same line (Y is very close)
-    const sameLine = Math.abs(currentGroup.y - item.y) < 5;
-    // Check if adjacent (X is close to the end of currentGroup)
+    const sameLine = Math.abs(currentGroup.y - item.y) < Math.max(3, currentGroup.height * 0.35);
+    // Check if adjacent horizontally
     const gap = item.x - (currentGroup.x + currentGroup.width);
-    const adjacent = gap >= -2 && gap < currentGroup.height * 2; // threshold based on font size (height)
+    const adjacent = gap >= -2 && gap < currentGroup.height * 1.5;
 
     if (sameLine && adjacent) {
       // Merge
-      // Calculate missing space to insert a space if necessary
       const needsSpace =
-        gap > currentGroup.height * 0.2 &&
+        gap > currentGroup.height * 0.15 &&
         !currentGroup.str.endsWith(" ") &&
         !item.str.startsWith(" ");
       currentGroup.str += (needsSpace ? " " : "") + item.str;
-      // Expand width to encompass the new item
       currentGroup.width = item.x + item.width - currentGroup.x;
-      // Do not change X or Y since it's the start of the group
+      currentGroup.pdfWidth = item.pdfX + item.pdfWidth - currentGroup.pdfX;
+      if (item.color !== "#000000" && currentGroup.color === "#000000") {
+        currentGroup.color = item.color;
+      }
+      if (item.bgColor !== "#ffffff" && currentGroup.bgColor === "#ffffff") {
+        currentGroup.bgColor = item.bgColor;
+      }
+      currentGroup.isBold = currentGroup.isBold || item.isBold;
+      currentGroup.isItalic = currentGroup.isItalic || item.isItalic;
     } else {
       groupedItems.push(currentGroup);
       currentGroup = { ...item };
