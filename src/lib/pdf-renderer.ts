@@ -55,6 +55,17 @@ export async function getPageCount(file: File): Promise<number> {
   return doc.numPages;
 }
 
+/** Get the dimensions (width and height in points) of a specific page. */
+export async function getPageDimensions(
+  file: File,
+  pageIndex: number,
+): Promise<{ width: number; height: number }> {
+  const doc = await getDoc(file);
+  const page = await doc.getPage(pageIndex + 1);
+  const viewport = page.getViewport({ scale: 1 });
+  return { width: viewport.width, height: viewport.height };
+}
+
 /** Render a page to a Blob (JPEG) at a given DPI-equivalent scale. */
 export async function renderPageToBlob(
   file: File,

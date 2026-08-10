@@ -1,11 +1,22 @@
 import { createFileRoute, Link, notFound } from "@tanstack/react-router";
-import { ArrowRight, ArrowLeft, Download, Loader2, RotateCcw, Type, Palette } from "lucide-react";
+import {
+  ArrowRight,
+  ArrowLeft,
+  Download,
+  Loader2,
+  RotateCcw,
+  Type,
+  Palette,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { IslandNav } from "@/components/IslandNav";
 import { SiteFooter } from "@/components/SiteFooter";
 import { DropZone, formatBytes } from "@/components/DropZone";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { CropViewer } from "@/components/CropViewer";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
@@ -43,6 +54,7 @@ import {
   type TextReplacement,
   parsePageRanges,
 } from "@/lib/pdf-ops";
+import { getPageDimensions } from "@/lib/pdf-renderer";
 import type { TextItemPosition } from "@/lib/pdf-renderer";
 import { cn } from "@/lib/utils";
 
@@ -210,6 +222,10 @@ function ToolPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<OutputFile[] | null>(null);
+  const [pageDimensions, setPageDimensions] = useState<{ width: number; height: number } | null>(
+    null,
+  );
+  const [cropPreviewPage, setCropPreviewPage] = useState(0);
   // For organize / reorder
   const [pageOrder, setPageOrder] = useState<number[] | null>(null);
   // Signature canvas
@@ -225,6 +241,8 @@ function ToolPage() {
     setError(null);
     setPages(null);
     setPageOrder(null);
+    setPageDimensions(null);
+    setCropPreviewPage(0);
     setOpts(defaults);
   }, [slug]);
 
@@ -246,10 +264,19 @@ function ToolPage() {
         }
       })
       .catch(() => active && setPages(null));
+
+    if (slug === "crop-pdf") {
+      getPageDimensions(first, cropPreviewPage)
+        .then((dims) => {
+          if (active) setPageDimensions(dims);
+        })
+        .catch(console.error);
+    }
+
     return () => {
       active = false;
     };
-  }, [files, tool.accepts, slug]);
+  }, [files, tool.accepts, slug, cropPreviewPage]);
 
   const selectedPages = useMemo(() => {
     if (!opts.ranges.trim() || !pages) return new Set<number>();
@@ -1122,41 +1149,81 @@ function ToolPage() {
                   {/* Real-time PDF Preview */}
                   {showPreview && files[0] && (
                     <div className="island p-4 md:p-6">
-                      <h3 className="mb-3 text-sm font-semibold text-muted-foreground">
-                        Page Preview
+                      <h3 className="mb-3 text-sm font-semibold text-muted-foreground flex items-center justify-between">
+                        <span>Page Preview</span>
+                        {slug === "crop-pdf" && pages && pages > 1 && (
+                          <div className="flex items-center gap-2">
+                            <Button
+                              variant="outline"
+                              size="icon"
+                              className="h-7 w-7"
+                              disabled={cropPreviewPage === 0}
+                              onClick={() => setCropPreviewPage((p) => Math.max(0, p - 1))}
+                            >
+                              <ChevronLeft className="h-4 w-4" />
+                            </Button>
+                            <span className="text-xs font-medium w-16 text-center">
+                              {cropPreviewPage + 1} / {pages}
+                            </span>
+                            <Button
+                              variant="outline"
+                              size="icon"
+                              className="h-7 w-7"
+                              disabled={cropPreviewPage === pages - 1}
+                              onClick={() => setCropPreviewPage((p) => Math.min(pages - 1, p + 1))}
+                            >
+                              <ChevronRight className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        )}
                       </h3>
-                      <PdfPreview
-                        file={files[0]}
-                        selectedPages={
-                          slug === "remove-pages" ||
-                          slug === "extract-pages" ||
-                          slug === "rotate-pdf"
-                            ? selectedPages
-                            : undefined
-                        }
-                        selectionMode={slug === "remove-pages" ? "remove" : "keep"}
-                        onPageClick={
-                          slug === "remove-pages" ||
-                          slug === "extract-pages" ||
-                          slug === "rotate-pdf"
-                            ? handlePageClick
-                            : undefined
-                        }
-                        rotationAngle={slug === "rotate-pdf" ? opts.angle : 0}
-                        draggable={slug === "organize-pages"}
-                        pageOrder={slug === "organize-pages" ? (pageOrder ?? undefined) : undefined}
-                        onReorder={slug === "organize-pages" ? setPageOrder : undefined}
-                        cropMargins={
-                          slug === "crop-pdf"
-                            ? {
-                                top: opts.cropTop,
-                                right: opts.cropRight,
-                                bottom: opts.cropBottom,
-                                left: opts.cropLeft,
-                              }
-                            : undefined
-                        }
-                      />
+                      {slug === "crop-pdf" ? (
+                        <CropViewer
+                          file={files[0]}
+                          pageIndex={cropPreviewPage}
+                          pageDimensions={pageDimensions}
+                          cropMargins={{
+                            top: opts.cropTop,
+                            right: opts.cropRight,
+                            bottom: opts.cropBottom,
+                            left: opts.cropLeft,
+                          }}
+                          onCropChange={(margins) => {
+                            setOpts((prev) => ({
+                              ...prev,
+                              cropTop: Math.round(margins.top),
+                              cropRight: Math.round(margins.right),
+                              cropBottom: Math.round(margins.bottom),
+                              cropLeft: Math.round(margins.left),
+                            }));
+                          }}
+                        />
+                      ) : (
+                        <PdfPreview
+                          file={files[0]}
+                          selectedPages={
+                            slug === "remove-pages" ||
+                            slug === "extract-pages" ||
+                            slug === "rotate-pdf"
+                              ? selectedPages
+                              : undefined
+                          }
+                          selectionMode={slug === "remove-pages" ? "remove" : "keep"}
+                          onPageClick={
+                            slug === "remove-pages" ||
+                            slug === "extract-pages" ||
+                            slug === "rotate-pdf"
+                              ? handlePageClick
+                              : undefined
+                          }
+                          rotationAngle={slug === "rotate-pdf" ? opts.angle : 0}
+                          draggable={slug === "organize-pages"}
+                          pageOrder={
+                            slug === "organize-pages" ? (pageOrder ?? undefined) : undefined
+                          }
+                          onReorder={slug === "organize-pages" ? setPageOrder : undefined}
+                        />
+                      )}
                     </div>
                   )}
                 </>

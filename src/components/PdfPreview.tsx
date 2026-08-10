@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { renderAllPages } from "@/lib/pdf-renderer";
 import { cn } from "@/lib/utils";
+import { InteractiveCropOverlay } from "@/components/InteractiveCropOverlay";
 
 type PdfPreviewProps = {
   file: File;
@@ -20,6 +21,11 @@ type PdfPreviewProps = {
   pageOrder?: number[] | undefined;
   /** Crop margins to preview (in points, for visual overlay). */
   cropMargins?: { top: number; right: number; bottom: number; left: number } | undefined;
+  /** Callback when crop margins change interactively. */
+  onCropChange?:
+    ((margins: { top: number; right: number; bottom: number; left: number }) => void) | undefined;
+  /** Actual dimensions of the PDF page in points, required for interactive cropping. */
+  pageDimensions?: { width: number; height: number } | undefined;
   className?: string | undefined;
 };
 
@@ -33,6 +39,8 @@ export function PdfPreview({
   onReorder,
   pageOrder,
   cropMargins,
+  onCropChange,
+  pageDimensions,
   className,
 }: PdfPreviewProps) {
   const [thumbnails, setThumbnails] = useState<string[]>([]);
@@ -134,17 +142,24 @@ export function PdfPreview({
                 }}
               />
               {/* Crop overlay */}
-              {cropMargins && (
-                <div
-                  className="pointer-events-none absolute border-2 border-dashed border-primary/60 bg-primary/5"
-                  style={{
-                    top: `${(cropMargins.top / 792) * 100}%`,
-                    left: `${(cropMargins.left / 612) * 100}%`,
-                    right: `${(cropMargins.right / 612) * 100}%`,
-                    bottom: `${(cropMargins.bottom / 792) * 100}%`,
-                  }}
-                />
-              )}
+              {cropMargins &&
+                (onCropChange && pageDimensions && pageIdx === 0 ? (
+                  <InteractiveCropOverlay
+                    pageDimensions={pageDimensions}
+                    cropMargins={cropMargins}
+                    onChange={onCropChange}
+                  />
+                ) : (
+                  <div
+                    className="pointer-events-none absolute border-2 border-dashed border-primary/60 bg-primary/5"
+                    style={{
+                      top: `${(cropMargins.top / (pageDimensions?.height || 792)) * 100}%`,
+                      left: `${(cropMargins.left / (pageDimensions?.width || 612)) * 100}%`,
+                      right: `${(cropMargins.right / (pageDimensions?.width || 612)) * 100}%`,
+                      bottom: `${(cropMargins.bottom / (pageDimensions?.height || 792)) * 100}%`,
+                    }}
+                  />
+                ))}
               {/* Dim overlay for removed pages */}
               {isSelected && selectionMode === "remove" && (
                 <div className="absolute inset-0 bg-red-500/20" />

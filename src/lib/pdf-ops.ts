@@ -204,12 +204,17 @@ export async function cropPdf(
   for (const i of targets) {
     const page = doc.getPage(i);
     const { width, height } = page.getSize();
-    page.setCropBox(
-      margins.left,
-      margins.bottom,
-      width - margins.left - margins.right,
-      height - margins.top - margins.bottom,
-    );
+
+    // Ensure we don't create negative boxes
+    const newWidth = Math.max(1, width - margins.left - margins.right);
+    const newHeight = Math.max(1, height - margins.top - margins.bottom);
+
+    // Set all boxes to be extremely thorough, as some viewers ignore CropBox
+    page.setCropBox(margins.left, margins.bottom, newWidth, newHeight);
+    page.setMediaBox(margins.left, margins.bottom, newWidth, newHeight);
+    page.setTrimBox(margins.left, margins.bottom, newWidth, newHeight);
+    page.setBleedBox(margins.left, margins.bottom, newWidth, newHeight);
+    page.setArtBox(margins.left, margins.bottom, newWidth, newHeight);
   }
   return [await save(doc, `${baseName(file)}-cropped.pdf`)];
 }
