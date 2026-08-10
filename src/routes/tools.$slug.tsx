@@ -57,6 +57,7 @@ import {
 import { getPageDimensions } from "@/lib/pdf-renderer";
 import type { TextItemPosition } from "@/lib/pdf-renderer";
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/hooks/useAuth";
 
 // Lazy-load components that depend on pdfjs-dist (browser-only, no SSR)
 const PdfPreview = lazy(() =>
@@ -214,6 +215,7 @@ const previewTools = new Set([
 ]);
 
 function ToolPage() {
+  const { checkUsageLimit } = useAuth();
   const { slug } = Route.useParams();
   const tool = getTool(slug)!;
   const [files, setFiles] = useState<File[]>([]);
@@ -350,6 +352,10 @@ function ToolPage() {
   };
 
   const run = async () => {
+    if (!checkUsageLimit()) {
+      return;
+    }
+    
     setBusy(true);
     setError(null);
     try {

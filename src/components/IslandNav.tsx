@@ -3,8 +3,10 @@ import { FileStack } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { navTools } from "@/lib/tools";
+import { useAuth } from "@/hooks/useAuth";
 
 export function IslandNav() {
+  const { session, setAuthModalOpen, logout } = useAuth();
   const [shrunk, setShrunk] = useState(false);
 
   useEffect(() => {
@@ -44,6 +46,22 @@ export function IslandNav() {
                 {tool.short}
               </Link>
             ))}
+            <span className="mx-1 h-6 w-px bg-border" />
+            {session ? (
+              <button
+                onClick={logout}
+                className="rounded-full px-3.5 py-2 text-sm font-medium text-muted-foreground transition-all hover:bg-accent hover:text-accent-foreground"
+              >
+                Log Out
+              </button>
+            ) : (
+              <button
+                onClick={() => setAuthModalOpen(true)}
+                className="rounded-full px-3.5 py-2 text-sm font-medium text-muted-foreground transition-all hover:bg-accent hover:text-accent-foreground"
+              >
+                Sign In
+              </button>
+            )}
           </div>
         </nav>
       </div>
