@@ -1,11 +1,9 @@
 import { createFileRoute, Link, notFound } from "@tanstack/react-router";
 import { ArrowRight, ArrowLeft, Download, Loader2, RotateCcw, Type, Palette } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { IslandNav } from "@/components/IslandNav";
 import { SiteFooter } from "@/components/SiteFooter";
 import { DropZone, formatBytes } from "@/components/DropZone";
-import { PdfPreview } from "@/components/PdfPreview";
-import { PdfTextEditor } from "@/components/PdfTextEditor";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -45,18 +43,19 @@ import {
   type TextReplacement,
   parsePageRanges,
 } from "@/lib/pdf-ops";
-import {
-  excelToPdf,
-  htmlToPdf,
-  pdfToExcel,
-  pdfToJpg,
-  pdfToPowerpoint,
-  pdfToWord,
-  powerpointToPdf,
-  wordToPdf,
-} from "@/lib/pdf-convert-ops";
 import type { TextItemPosition } from "@/lib/pdf-renderer";
 import { cn } from "@/lib/utils";
+
+// Lazy-load components that depend on pdfjs-dist (browser-only, no SSR)
+const PdfPreview = lazy(() =>
+  import("@/components/PdfPreview").then((m) => ({ default: m.PdfPreview })),
+);
+const PdfTextEditor = lazy(() =>
+  import("@/components/PdfTextEditor").then((m) => ({ default: m.PdfTextEditor })),
+);
+
+// Dynamic import helper for pdf-convert-ops (also depends on pdfjs-dist)
+const getPdfConvertOps = () => import("@/lib/pdf-convert-ops");
 
 export const Route = createFileRoute("/tools/$slug")({
   loader: ({ params }) => {
@@ -359,30 +358,46 @@ function ToolPage() {
         case "jpg-to-pdf":
           out = await imagesToPdf(files);
           break;
-        case "word-to-pdf":
-          out = await wordToPdf(file);
+        case "word-to-pdf": {
+          const ops = await getPdfConvertOps();
+          out = await ops.wordToPdf(file);
           break;
-        case "powerpoint-to-pdf":
-          out = await powerpointToPdf(file);
+        }
+        case "powerpoint-to-pdf": {
+          const ops = await getPdfConvertOps();
+          out = await ops.powerpointToPdf(file);
           break;
-        case "excel-to-pdf":
-          out = await excelToPdf(file);
+        }
+        case "excel-to-pdf": {
+          const ops = await getPdfConvertOps();
+          out = await ops.excelToPdf(file);
           break;
-        case "html-to-pdf":
-          out = await htmlToPdf(file);
+        }
+        case "html-to-pdf": {
+          const ops = await getPdfConvertOps();
+          out = await ops.htmlToPdf(file);
           break;
-        case "pdf-to-jpg":
-          out = await pdfToJpg(file, opts.jpgQuality / 100);
+        }
+        case "pdf-to-jpg": {
+          const ops = await getPdfConvertOps();
+          out = await ops.pdfToJpg(file, opts.jpgQuality / 100);
           break;
-        case "pdf-to-word":
-          out = await pdfToWord(file);
+        }
+        case "pdf-to-word": {
+          const ops = await getPdfConvertOps();
+          out = await ops.pdfToWord(file);
           break;
-        case "pdf-to-powerpoint":
-          out = await pdfToPowerpoint(file);
+        }
+        case "pdf-to-powerpoint": {
+          const ops = await getPdfConvertOps();
+          out = await ops.pdfToPowerpoint(file);
           break;
-        case "pdf-to-excel":
-          out = await pdfToExcel(file);
+        }
+        case "pdf-to-excel": {
+          const ops = await getPdfConvertOps();
+          out = await ops.pdfToExcel(file);
           break;
+        }
         case "pdf-to-pdfa":
           out = await pdfToPdfa(file);
           break;
@@ -433,10 +448,11 @@ function ToolPage() {
         case "compare-pdf": {
           if (files.length < 2) throw new Error("Upload two PDFs to compare.");
           // For compare, we just render both side by side as images (results view handles display)
-          out = await pdfToJpg(files[0]!, 0.92);
-          const out2 = await pdfToJpg(files[1]!, 0.92);
+          const ops = await getPdfConvertOps();
+          const out1 = await ops.pdfToJpg(files[0]!, 0.92);
+          const out2 = await ops.pdfToJpg(files[1]!, 0.92);
           out = [
-            ...out.map((o, i) => ({ ...o, name: `original-page-${i + 1}.jpg` })),
+            ...out1.map((o, i) => ({ ...o, name: `original-page-${i + 1}.jpg` })),
             ...out2.map((o, i) => ({ ...o, name: `compared-page-${i + 1}.jpg` })),
           ];
           break;
