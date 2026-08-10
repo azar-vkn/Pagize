@@ -19,6 +19,7 @@ export function AuthModal() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
 
   const supabase = createClient();
 
@@ -26,6 +27,7 @@ export function AuthModal() {
     e.preventDefault();
     setLoading(true);
     setError(null);
+    setSuccess(null);
 
     try {
       if (isSignUp) {
@@ -34,7 +36,7 @@ export function AuthModal() {
           password,
         });
         if (error) throw error;
-        // In many setups this will automatically log the user in if email verification is off
+        setSuccess("Please check your email for a verification link to complete your registration.");
       } else {
         const { error } = await supabase.auth.signInWithPassword({
           email,
@@ -83,6 +85,7 @@ export function AuthModal() {
             />
           </div>
           {error && <p className="text-sm font-medium text-destructive">{error}</p>}
+          {success && <p className="text-sm font-medium text-green-600 dark:text-green-400">{success}</p>}
           <Button type="submit" className="w-full" disabled={loading}>
             {loading ? "Please wait..." : isSignUp ? "Sign Up" : "Log In"}
           </Button>
@@ -94,6 +97,7 @@ export function AuthModal() {
             onClick={() => {
               setIsSignUp(!isSignUp);
               setError(null);
+              setSuccess(null);
             }}
             className="font-semibold text-primary hover:underline"
           >
