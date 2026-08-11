@@ -19,8 +19,8 @@ type PdfPreviewProps = {
   onReorder?: ((newOrder: number[]) => void) | undefined;
   /** Current page order (zero-based indices). */
   pageOrder?: number[] | undefined;
-  /** Crop margins to preview (in points, for visual overlay). */
-  cropMargins?: { top: number; right: number; bottom: number; left: number } | undefined;
+  /** Crop margins per page (in points, for visual overlay). */
+  pageCrops?: Record<number, { top: number; right: number; bottom: number; left: number }> | undefined;
   /** Callback when crop margins change interactively. */
   onCropChange?:
     ((margins: { top: number; right: number; bottom: number; left: number }) => void) | undefined;
@@ -38,7 +38,7 @@ export function PdfPreview({
   draggable = false,
   onReorder,
   pageOrder,
-  cropMargins,
+  pageCrops,
   onCropChange,
   pageDimensions,
   className,
@@ -142,21 +142,21 @@ export function PdfPreview({
                 }}
               />
               {/* Crop overlay */}
-              {cropMargins &&
+              {pageCrops?.[pageIdx] &&
                 (onCropChange && pageDimensions && pageIdx === 0 ? (
                   <InteractiveCropOverlay
                     pageDimensions={pageDimensions}
-                    cropMargins={cropMargins}
+                    cropMargins={pageCrops[pageIdx]!}
                     onChange={onCropChange}
                   />
                 ) : (
                   <div
                     className="pointer-events-none absolute border-2 border-dashed border-primary/60 bg-primary/5"
                     style={{
-                      top: `${(cropMargins.top / (pageDimensions?.height || 792)) * 100}%`,
-                      left: `${(cropMargins.left / (pageDimensions?.width || 612)) * 100}%`,
-                      right: `${(cropMargins.right / (pageDimensions?.width || 612)) * 100}%`,
-                      bottom: `${(cropMargins.bottom / (pageDimensions?.height || 792)) * 100}%`,
+                      top: `${(pageCrops[pageIdx]!.top / (pageDimensions?.height || 792)) * 100}%`,
+                      left: `${(pageCrops[pageIdx]!.left / (pageDimensions?.width || 612)) * 100}%`,
+                      right: `${(pageCrops[pageIdx]!.right / (pageDimensions?.width || 612)) * 100}%`,
+                      bottom: `${(pageCrops[pageIdx]!.bottom / (pageDimensions?.height || 792)) * 100}%`,
                     }}
                   />
                 ))}

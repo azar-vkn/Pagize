@@ -192,16 +192,18 @@ export async function organizePages(file: File, newOrder: number[]): Promise<Out
   return [await save(doc, `${baseName(file)}-reordered.pdf`)];
 }
 
-/** Crop all (or specified) pages by trimming margins in points. */
+/** Crop pages using per-page crop margins in points. */
 export async function cropPdf(
   file: File,
-  margins: { top: number; right: number; bottom: number; left: number },
-  ranges: string,
+  pageCrops: Record<number, { top: number; right: number; bottom: number; left: number }>,
 ): Promise<OutputFile[]> {
   const doc = await load(file);
   const total = doc.getPageCount();
-  const targets = ranges.trim() ? parsePageRanges(ranges, total) : doc.getPageIndices();
-  for (const i of targets) {
+  
+  for (let i = 0; i < total; i++) {
+    const margins = pageCrops[i];
+    if (!margins) continue;
+
     const page = doc.getPage(i);
     const { width, height } = page.getSize();
 

@@ -102,10 +102,7 @@ type Options = {
   wmSize: number;
   level: "low" | "recommended" | "extreme";
   // Crop
-  cropTop: number;
-  cropRight: number;
-  cropBottom: number;
-  cropLeft: number;
+  pageCrops: Record<number, { top: number; right: number; bottom: number; left: number }>;
   // Protect
   userPassword: string;
   ownerPassword: string;
@@ -145,10 +142,7 @@ const defaults: Options = {
   wmAngle: 45,
   wmSize: 48,
   level: "recommended",
-  cropTop: 20,
-  cropRight: 20,
-  cropBottom: 20,
-  cropLeft: 20,
+  pageCrops: {},
   userPassword: "",
   ownerPassword: "",
   signatureDataUrl: "",
@@ -305,6 +299,8 @@ function ToolPage() {
   const handlePageClick = (pageIdx: number) => {
     if (slug === "remove-pages" || slug === "extract-pages" || slug === "rotate-pdf") {
       togglePage(pageIdx);
+    } else if (slug === "crop-pdf") {
+      setCropPreviewPage(pageIdx);
     }
   };
 
@@ -446,16 +442,7 @@ function ToolPage() {
           out = await editPdfReplaceText(file, opts.textReplacements);
           break;
         case "crop-pdf":
-          out = await cropPdf(
-            file,
-            {
-              top: opts.cropTop,
-              right: opts.cropRight,
-              bottom: opts.cropBottom,
-              left: opts.cropLeft,
-            },
-            opts.ranges,
-          );
+          out = await cropPdf(file, opts.pageCrops);
           break;
         case "protect-pdf":
           out = await protectPdf(file, opts.userPassword, opts.ownerPassword);
@@ -738,11 +725,31 @@ function ToolPage() {
             Each image becomes one page sized to the image. Drop or select all your images.
           </p>
         );
-      case "crop-pdf":
+      case "crop-pdf": {
+        const currentCrop = opts.pageCrops[cropPreviewPage] || { top: 20, right: 20, bottom: 20, left: 20 };
+        const setCrop = (key: "top" | "right" | "bottom" | "left", val: number) => {
+          setOpts((prev) => ({
+            ...prev,
+            pageCrops: {
+              ...prev.pageCrops,
+              [cropPreviewPage]: { ...currentCrop, [key]: val },
+            },
+          }));
+        };
+
+        const applyToAll = () => {
+          if (!pages) return;
+          const newCrops: typeof opts.pageCrops = {};
+          for (let i = 0; i < pages; i++) {
+            newCrops[i] = currentCrop;
+          }
+          setOpts((prev) => ({ ...prev, pageCrops: newCrops }));
+        };
+
         return (
           <div className="space-y-4">
             <p className="text-xs text-muted-foreground">
-              Set margins in points (72 pt = 1 inch). Preview shows the crop area.
+              Set margins in points (72 pt = 1 inch) for page {cropPreviewPage + 1}.
             </p>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
@@ -751,8 +758,8 @@ function ToolPage() {
                   id="cropTop"
                   type="number"
                   min={0}
-                  value={opts.cropTop}
-                  onChange={(e) => set("cropTop", Number(e.target.value))}
+                  value={currentCrop.top}
+                  onChange={(e) => setCrop("top", Number(e.target.value))}
                   className="rounded-xl"
                 />
               </div>
@@ -762,8 +769,8 @@ function ToolPage() {
                   id="cropBottom"
                   type="number"
                   min={0}
-                  value={opts.cropBottom}
-                  onChange={(e) => set("cropBottom", Number(e.target.value))}
+                  value={currentCrop.bottom}
+                  onChange={(e) => setCrop("bottom", Number(e.target.value))}
                   className="rounded-xl"
                 />
               </div>
@@ -773,8 +780,8 @@ function ToolPage() {
                   id="cropLeft"
                   type="number"
                   min={0}
-                  value={opts.cropLeft}
-                  onChange={(e) => set("cropLeft", Number(e.target.value))}
+                  value={currentCrop.left}
+                  onChange={(e) => setCrop("left", Number(e.target.value))}
                   className="rounded-xl"
                 />
               </div>
@@ -784,15 +791,18 @@ function ToolPage() {
                   id="cropRight"
                   type="number"
                   min={0}
-                  value={opts.cropRight}
-                  onChange={(e) => set("cropRight", Number(e.target.value))}
+                  value={currentCrop.right}
+                  onChange={(e) => setCrop("right", Number(e.target.value))}
                   className="rounded-xl"
                 />
               </div>
             </div>
-            {rangeField("Leave empty to crop all pages.")}
+            <Button variant="secondary" className="w-full rounded-xl" onClick={applyToAll}>
+              Apply to all pages
+            </Button>
           </div>
         );
+      }
       case "protect-pdf":
         return (
           <div className="space-y-4">
@@ -1184,26 +1194,41 @@ function ToolPage() {
                         )}
                       </h3>
                       {slug === "crop-pdf" ? (
-                        <CropViewer
-                          file={files[0]}
-                          pageIndex={cropPreviewPage}
-                          pageDimensions={pageDimensions}
-                          cropMargins={{
-                            top: opts.cropTop,
-                            right: opts.cropRight,
-                            bottom: opts.cropBottom,
-                            left: opts.cropLeft,
-                          }}
-                          onCropChange={(margins) => {
-                            setOpts((prev) => ({
-                              ...prev,
-                              cropTop: Math.round(margins.top),
-                              cropRight: Math.round(margins.right),
-                              cropBottom: Math.round(margins.bottom),
-                              cropLeft: Math.round(margins.left),
-                            }));
-                          }}
-                        />
+                        <div className="space-y-6">
+                          <CropViewer
+                            file={files[0]}
+                            pageIndex={cropPreviewPage}
+                            pageDimensions={pageDimensions}
+                            cropMargins={
+                              opts.pageCrops[cropPreviewPage] || { top: 20, right: 20, bottom: 20, left: 20 }
+                            }
+                            onCropChange={(margins) => {
+                              setOpts((prev) => ({
+                                ...prev,
+                                pageCrops: {
+                                  ...prev.pageCrops,
+                                  [cropPreviewPage]: {
+                                    top: Math.round(margins.top),
+                                    right: Math.round(margins.right),
+                                    bottom: Math.round(margins.bottom),
+                                    left: Math.round(margins.left),
+                                  },
+                                },
+                              }));
+                            }}
+                          />
+                          <div className="space-y-3 border-t pt-4">
+                            <h4 className="text-sm font-semibold">Select pages to crop</h4>
+                            <PdfPreview
+                              file={files[0]}
+                              selectedPages={new Set([cropPreviewPage])}
+                              selectionMode="keep"
+                              onPageClick={handlePageClick}
+                              pageCrops={opts.pageCrops}
+                              pageDimensions={pageDimensions ?? undefined}
+                            />
+                          </div>
+                        </div>
                       ) : (
                         <PdfPreview
                           file={files[0]}
