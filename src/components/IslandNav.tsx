@@ -47,19 +47,18 @@ export function IslandNav() {
               </Link>
             ))}
             <span className="mx-1 h-6 w-px bg-border" />
-            {session ? (
+            <button
+              onClick={() => setAuthModalOpen(true)}
+              className="rounded-full px-3.5 py-2 text-sm font-medium text-muted-foreground transition-all hover:bg-accent hover:text-accent-foreground"
+            >
+              Sign In
+            </button>
+            {session && (
               <button
                 onClick={logout}
                 className="rounded-full px-3.5 py-2 text-sm font-medium text-muted-foreground transition-all hover:bg-accent hover:text-accent-foreground"
               >
                 Log Out
-              </button>
-            ) : (
-              <button
-                onClick={() => setAuthModalOpen(true)}
-                className="rounded-full px-3.5 py-2 text-sm font-medium text-muted-foreground transition-all hover:bg-accent hover:text-accent-foreground"
-              >
-                Sign In
               </button>
             )}
           </div>

@@ -58,6 +58,8 @@ import { getPageDimensions } from "@/lib/pdf-renderer";
 import type { TextItemPosition } from "@/lib/pdf-renderer";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/hooks/useAuth";
+import { Breadcrumbs } from "@/components/Breadcrumbs";
+import { getSeoData } from "@/lib/seo-data";
 
 // Lazy-load components that depend on pdfjs-dist (browser-only, no SSR)
 const PdfPreview = lazy(() =>
@@ -76,17 +78,68 @@ export const Route = createFileRoute("/tools/$slug")({
     if (!tool) throw notFound();
     return { name: tool.name, blurb: tool.blurb };
   },
-  head: ({ loaderData }) => ({
-    meta: [
-      { title: `${loaderData?.name ?? "PDF tool"} — Pagize` },
-      {
-        name: "description",
-        content: loaderData?.blurb ?? "A PDF tool that runs locally in your browser.",
-      },
-      { property: "og:title", content: `${loaderData?.name ?? "PDF tool"} — Pagize` },
-      { property: "og:description", content: loaderData?.blurb ?? "Browser-based PDF tools." },
-    ],
-  }),
+  head: ({ loaderData, params }) => {
+    const seo = getSeoData(params.slug);
+    const url = `https://pagize.com/tools/${params.slug}`;
+
+    // Generate Structured Data
+    const breadcrumbSchema = {
+      "@context": "https://schema.org",
+      "@type": "BreadcrumbList",
+      "itemListElement": [
+        { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://pagize.com" },
+        { "@type": "ListItem", "position": 2, "name": "PDF Tools", "item": "https://pagize.com/#tools" },
+        { "@type": "ListItem", "position": 3, "name": loaderData?.name ?? "Tool", "item": url }
+      ]
+    };
+
+    const faqSchema = seo.faqs.length > 0 ? {
+      "@context": "https://schema.org",
+      "@type": "FAQPage",
+      "mainEntity": seo.faqs.map(faq => ({
+        "@type": "Question",
+        "name": faq.q,
+        "acceptedAnswer": {
+          "@type": "Answer",
+          "text": faq.a
+        }
+      }))
+    } : null;
+
+    const webAppSchema = {
+      "@context": "https://schema.org",
+      "@type": "WebApplication",
+      "name": loaderData?.name ?? "PDF Tool",
+      "applicationCategory": "BrowserApplication",
+      "operatingSystem": "All",
+      "description": seo.seoDescription,
+      "url": url,
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+    };
+
+    const schemas = [breadcrumbSchema, webAppSchema, faqSchema].filter(Boolean);
+
+    return {
+      meta: [
+        { title: seo.seoTitle },
+        { name: "description", content: seo.seoDescription },
+        { property: "og:title", content: seo.seoTitle },
+        { property: "og:description", content: seo.seoDescription },
+        { property: "og:url", content: url },
+        { property: "og:type", content: "website" },
+        { name: "twitter:card", content: "summary_large_image" },
+        { name: "twitter:title", content: seo.seoTitle },
+        { name: "twitter:description", content: seo.seoDescription },
+      ],
+      links: [
+        { rel: "canonical", href: url }
+      ],
+      scripts: schemas.map(schema => ({
+        type: "application/ld+json",
+        children: JSON.stringify(schema)
+      }))
+    };
+  },
   component: ToolPage,
 });
 
@@ -1055,14 +1108,15 @@ function ToolPage() {
     <div className="min-h-screen">
       <IslandNav />
       <main className="mx-auto w-full max-w-5xl px-6 pt-28 md:pt-32">
-        <Link
-          to="/"
-          className="inline-flex items-center gap-2 text-sm text-muted-foreground transition-colors hover:text-primary"
-        >
-          <ArrowLeft className="size-4" /> All tools
-        </Link>
+        <Breadcrumbs 
+          items={[
+            { label: "Home", href: "/" },
+            { label: "PDF Tools", href: "/#tools" },
+            { label: tool.name }
+          ]} 
+        />
 
-        <header className="mt-5 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 sm:flex sm:justify-between">
+        <header className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 sm:flex sm:justify-between">
           <div className="flex min-w-0 items-center gap-4">
             <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-primary text-primary-foreground">
               <tool.icon className="size-6" />
@@ -1287,6 +1341,86 @@ function ToolPage() {
             </aside>
           </div>
         )}
+
+        {/* SEO Content Section */}
+        {(() => {
+          const seo = getSeoData(slug);
+          return (
+            <article className="mt-16 border-t border-border pt-12 pb-24 space-y-12 max-w-3xl">
+              <section>
+                <h2 className="text-xl font-semibold mb-4">About the {tool.name} tool</h2>
+                <div className="text-muted-foreground space-y-4 text-sm leading-relaxed">
+                  {seo.seoIntro.split('\n\n').map((paragraph, idx) => (
+                    <p key={idx}>{paragraph}</p>
+                  ))}
+                </div>
+              </section>
+
+              {seo.howTo.length > 0 && (
+                <section>
+                  <h2 className="text-xl font-semibold mb-6">How to {slug.split('-').join(' ')}</h2>
+                  <ol className="space-y-4">
+                    {seo.howTo.map((step, idx) => (
+                      <li key={idx} className="flex gap-4">
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-accent text-sm font-semibold text-accent-foreground">
+                          {idx + 1}
+                        </span>
+                        <div>
+                          <h3 className="font-semibold text-foreground">{step.title}</h3>
+                          <p className="text-sm text-muted-foreground mt-1">{step.step}</p>
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                </section>
+              )}
+
+              <section className="rounded-2xl bg-primary/5 p-6 border border-primary/10">
+                <h2 className="text-lg font-semibold text-primary mb-3">Why use Pagize?</h2>
+                <p className="text-sm text-muted-foreground leading-relaxed">
+                  Pagize is designed to process supported documents directly in your browser. This means your files remain securely on your device and are never unnecessarily uploaded to a processing server. Experience blazing fast speeds and total privacy for your sensitive documents.
+                </p>
+              </section>
+
+              {seo.faqs.length > 0 && (
+                <section>
+                  <h2 className="text-xl font-semibold mb-6">Frequently Asked Questions</h2>
+                  <div className="space-y-6">
+                    {seo.faqs.map((faq, idx) => (
+                      <div key={idx}>
+                        <h3 className="font-semibold text-foreground">{faq.q}</h3>
+                        <p className="text-sm text-muted-foreground mt-2">{faq.a}</p>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {seo.relatedTools.length > 0 && (
+                <section>
+                  <h2 className="text-xl font-semibold mb-4">Related Tools</h2>
+                  <div className="flex flex-wrap gap-3">
+                    {seo.relatedTools.map(relatedSlug => {
+                      const relatedTool = getTool(relatedSlug);
+                      if (!relatedTool) return null;
+                      return (
+                        <Link
+                          key={relatedSlug}
+                          to={`/tools/$slug`}
+                          params={{ slug: relatedSlug }}
+                          className="inline-flex items-center gap-2 rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium transition-colors hover:bg-accent"
+                        >
+                          <relatedTool.icon className="h-4 w-4" />
+                          {relatedTool.name}
+                        </Link>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
+            </article>
+          );
+        })()}
       </main>
       <SiteFooter />
     </div>

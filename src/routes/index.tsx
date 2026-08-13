@@ -9,18 +9,42 @@ import { categories, tools } from "@/lib/tools";
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Pagize — Free Browser PDF Tools" },
+      { title: "Pagize — Simple PDF & Document Tools" },
       {
         name: "description",
         content:
-          "Merge, split, compress, rotate, watermark and convert PDFs right in your browser. No uploads, no waiting, no sign-up.",
+          "Fast, privacy-conscious PDF and document tools designed to work directly in your browser. Merge, split, compress, and convert without uploading files to a server.",
       },
-      { property: "og:title", content: "Pagize — Free Browser PDF Tools" },
+      { property: "og:title", content: "Pagize — Simple PDF & Document Tools" },
       {
         property: "og:description",
-        content: "Merge, split, compress and convert PDFs privately in your browser.",
+        content: "Fast, privacy-conscious PDF and document tools designed to work directly in your browser.",
       },
+      { property: "og:url", content: "https://pagize.com" },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary_large_image" },
+      { name: "twitter:title", content: "Pagize — Simple PDF & Document Tools" },
+      { name: "twitter:description", content: "Fast, privacy-conscious PDF tools." },
     ],
+    links: [
+      { rel: "canonical", href: "https://pagize.com" }
+    ],
+    scripts: [
+      {
+        type: "application/ld+json",
+        children: JSON.stringify({
+          "@context": "https://schema.org",
+          "@type": "WebSite",
+          "name": "Pagize",
+          "url": "https://pagize.com",
+          "potentialAction": {
+            "@type": "SearchAction",
+            "target": "https://pagize.com/?q={search_term_string}",
+            "query-input": "required name=search_term_string"
+          }
+        })
+      }
+    ]
   }),
   component: Index,
 });
@@ -46,14 +70,13 @@ function Index() {
             <Sparkles className="size-3.5 text-primary" /> Runs locally — your files stay yours
           </span>
           <h1 className="mt-6 text-4xl font-semibold leading-[1.05] md:text-6xl">
-            Every PDF tool you need,
-            <br />
+            Every PDF tool you need,<br />
             <span className="text-primary">one warm little toolbox.</span>
           </h1>
           <p className="mx-auto mt-4 max-w-xl text-base text-muted-foreground">
-            Drop a file and pick a tool. Merging, splitting, compressing and converting happen
-            instantly in your browser.
+            Drop a file and pick a tool. Merging, splitting, compressing and converting happen instantly in your browser.
           </p>
+
 
           <div className="mx-auto mt-8 max-w-xl">
             <div className="relative">

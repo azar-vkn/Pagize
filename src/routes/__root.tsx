@@ -15,19 +15,43 @@ import { AuthModal } from "@/components/AuthModal";
 
 function NotFoundComponent() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
-      <div className="max-w-md text-center">
-        <h1 className="text-7xl font-bold text-foreground">404</h1>
-        <h2 className="mt-4 text-xl font-semibold text-foreground">Page not found</h2>
-        <p className="mt-2 text-sm text-muted-foreground">
-          The page you're looking for doesn't exist or has been moved.
+    <div className="flex min-h-screen items-center justify-center bg-background px-4 py-12">
+      <div className="max-w-xl text-center">
+        <h1 className="text-7xl font-bold text-primary">404</h1>
+        <h2 className="mt-6 text-2xl font-semibold text-foreground">Page not found</h2>
+        <p className="mt-3 text-base text-muted-foreground">
+          We couldn't find the page you were looking for. It might have been moved or doesn't exist.
         </p>
-        <div className="mt-6">
+        
+        <div className="mt-8 rounded-2xl bg-accent p-6 text-left">
+          <h3 className="font-semibold text-foreground mb-4">Try one of our popular tools:</h3>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {[
+              { slug: "merge-pdf", label: "Merge PDF" },
+              { slug: "split-pdf", label: "Split PDF" },
+              { slug: "compress-pdf", label: "Compress PDF" },
+              { slug: "pdf-to-jpg", label: "PDF to JPG" },
+              { slug: "word-to-pdf", label: "Word to PDF" },
+              { slug: "protect-pdf", label: "Protect PDF" }
+            ].map(tool => (
+              <Link
+                key={tool.slug}
+                to="/tools/$slug"
+                params={{ slug: tool.slug }}
+                className="rounded-lg bg-background px-3 py-2 text-sm font-medium transition-colors hover:text-primary hover:shadow-sm"
+              >
+                {tool.label}
+              </Link>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-10">
           <Link
             to="/"
-            className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+            className="inline-flex items-center justify-center rounded-full bg-primary px-6 py-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
           >
-            Go home
+            Back to Homepage
           </Link>
         </div>
       </div>

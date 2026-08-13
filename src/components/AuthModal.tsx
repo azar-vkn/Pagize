@@ -99,7 +99,7 @@ export function AuthModal() {
     <Dialog open={isAuthModalOpen} onOpenChange={setAuthModalOpen}>
       <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
-          <DialogTitle>{isSignUp ? "Create an account" : "Welcome back"}</DialogTitle>
+          <DialogTitle>{isSignUp ? "Create an account" : "Get more freedom"}</DialogTitle>
           <DialogDescription>
             {isSignUp
               ? "Sign up to get unlimited access to all tools."
