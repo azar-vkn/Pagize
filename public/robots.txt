@@ -13,4 +13,4 @@ Allow: /
 User-agent: *
 Allow: /
 
-Sitemap: https://pagize.com/sitemap.xml
+Sitemap: https://pagize.vercel.app/sitemap.xml

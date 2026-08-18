@@ -2,152 +2,152 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   
   <url>
-    <loc>https://pagize.com/</loc>
+    <loc>https://pagize.vercel.app/</loc>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/merge-pdf</loc>
+    <loc>https://pagize.vercel.app/tools/merge-pdf</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/split-pdf</loc>
+    <loc>https://pagize.vercel.app/tools/split-pdf</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/remove-pages</loc>
+    <loc>https://pagize.vercel.app/tools/remove-pages</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/extract-pages</loc>
+    <loc>https://pagize.vercel.app/tools/extract-pages</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/rotate-pdf</loc>
+    <loc>https://pagize.vercel.app/tools/rotate-pdf</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/organize-pages</loc>
+    <loc>https://pagize.vercel.app/tools/organize-pages</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/scan-to-pdf</loc>
+    <loc>https://pagize.vercel.app/tools/scan-to-pdf</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/jpg-to-pdf</loc>
+    <loc>https://pagize.vercel.app/tools/jpg-to-pdf</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/word-to-pdf</loc>
+    <loc>https://pagize.vercel.app/tools/word-to-pdf</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/powerpoint-to-pdf</loc>
+    <loc>https://pagize.vercel.app/tools/powerpoint-to-pdf</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/excel-to-pdf</loc>
+    <loc>https://pagize.vercel.app/tools/excel-to-pdf</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/html-to-pdf</loc>
+    <loc>https://pagize.vercel.app/tools/html-to-pdf</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/pdf-to-jpg</loc>
+    <loc>https://pagize.vercel.app/tools/pdf-to-jpg</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/pdf-to-word</loc>
+    <loc>https://pagize.vercel.app/tools/pdf-to-word</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/pdf-to-powerpoint</loc>
+    <loc>https://pagize.vercel.app/tools/pdf-to-powerpoint</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/pdf-to-excel</loc>
+    <loc>https://pagize.vercel.app/tools/pdf-to-excel</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/pdf-to-pdfa</loc>
+    <loc>https://pagize.vercel.app/tools/pdf-to-pdfa</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/add-page-numbers</loc>
+    <loc>https://pagize.vercel.app/tools/add-page-numbers</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/watermark-pdf</loc>
+    <loc>https://pagize.vercel.app/tools/watermark-pdf</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/edit-pdf</loc>
+    <loc>https://pagize.vercel.app/tools/edit-pdf</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/crop-pdf</loc>
+    <loc>https://pagize.vercel.app/tools/crop-pdf</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/protect-pdf</loc>
+    <loc>https://pagize.vercel.app/tools/protect-pdf</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/unlock-pdf</loc>
+    <loc>https://pagize.vercel.app/tools/unlock-pdf</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/sign-pdf</loc>
+    <loc>https://pagize.vercel.app/tools/sign-pdf</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/redact-pdf</loc>
+    <loc>https://pagize.vercel.app/tools/redact-pdf</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/compare-pdf</loc>
+    <loc>https://pagize.vercel.app/tools/compare-pdf</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/compress-pdf</loc>
+    <loc>https://pagize.vercel.app/tools/compress-pdf</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/repair-pdf</loc>
+    <loc>https://pagize.vercel.app/tools/repair-pdf</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://pagize.com/tools/ocr-pdf</loc>
+    <loc>https://pagize.vercel.app/tools/ocr-pdf</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>

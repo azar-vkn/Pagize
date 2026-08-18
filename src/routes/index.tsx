@@ -5,6 +5,7 @@ import { IslandNav } from "@/components/IslandNav";
 import { SiteFooter } from "@/components/SiteFooter";
 import { Input } from "@/components/ui/input";
 import { categories, tools } from "@/lib/tools";
+import { SITE_URL } from "@/lib/site";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -20,14 +21,14 @@ export const Route = createFileRoute("/")({
         property: "og:description",
         content: "Fast, privacy-conscious PDF and document tools designed to work directly in your browser.",
       },
-      { property: "og:url", content: "https://pagize.com" },
+      { property: "og:url", content: SITE_URL },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
       { name: "twitter:title", content: "Pagize — Simple PDF & Document Tools" },
       { name: "twitter:description", content: "Fast, privacy-conscious PDF tools." },
     ],
     links: [
-      { rel: "canonical", href: "https://pagize.com" }
+      { rel: "canonical", href: SITE_URL }
     ],
     scripts: [
       {
@@ -36,10 +37,10 @@ export const Route = createFileRoute("/")({
           "@context": "https://schema.org",
           "@type": "WebSite",
           "name": "Pagize",
-          "url": "https://pagize.com",
+          "url": SITE_URL,
           "potentialAction": {
             "@type": "SearchAction",
-            "target": "https://pagize.com/?q={search_term_string}",
+            "target": `${SITE_URL}/?q={search_term_string}`,
             "query-input": "required name=search_term_string"
           }
         })

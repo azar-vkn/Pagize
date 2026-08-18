@@ -1,14 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { tools } from '../src/lib/tools';
+import { SITE_URL } from '../src/lib/site';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 function generateSitemap() {
-  const baseUrl = 'https://pagize.com';
-  
+  const baseUrl = SITE_URL;
+
   // Base routes
   const routes = [
     { url: '/', priority: '1.0', changefreq: 'weekly' }
@@ -41,7 +42,31 @@ function generateSitemap() {
 
   const sitemapPath = path.resolve(publicDir, 'sitemap.xml');
   fs.writeFileSync(sitemapPath, sitemapContent.trim());
-  console.log(`✅ Sitemap generated at ${sitemapPath}`);
+  console.log(`✅ Sitemap generated at ${sitemapPath} (${routes.length} URLs, ${baseUrl})`);
+
+  // robots.txt is generated from the same baseUrl so the Sitemap: line can
+  // never drift away from the host the sitemap actually uses.
+  const robotsContent = `User-agent: Googlebot
+Allow: /
+
+User-agent: Bingbot
+Allow: /
+
+User-agent: Twitterbot
+Allow: /
+
+User-agent: facebookexternalhit
+Allow: /
+
+User-agent: *
+Allow: /
+
+Sitemap: ${baseUrl}/sitemap.xml
+`;
+
+  const robotsPath = path.resolve(publicDir, 'robots.txt');
+  fs.writeFileSync(robotsPath, robotsContent);
+  console.log(`✅ robots.txt generated at ${robotsPath}`);
 }
 
 generateSitemap();

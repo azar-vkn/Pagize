@@ -14,6 +14,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { IslandNav } from "@/components/IslandNav";
 import { SiteFooter } from "@/components/SiteFooter";
 import { DropZone, formatBytes } from "@/components/DropZone";
+import { SITE_URL } from "@/lib/site";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CropViewer } from "@/components/CropViewer";
@@ -80,15 +81,15 @@ export const Route = createFileRoute("/tools/$slug")({
   },
   head: ({ loaderData, params }) => {
     const seo = getSeoData(params.slug);
-    const url = `https://pagize.com/tools/${params.slug}`;
+    const url = `${SITE_URL}/tools/${params.slug}`;
 
     // Generate Structured Data
     const breadcrumbSchema = {
       "@context": "https://schema.org",
       "@type": "BreadcrumbList",
       "itemListElement": [
-        { "@type": "ListItem", "position": 1, "name": "Home", "item": "https://pagize.com" },
-        { "@type": "ListItem", "position": 2, "name": "PDF Tools", "item": "https://pagize.com/#tools" },
+        { "@type": "ListItem", "position": 1, "name": "Home", "item": SITE_URL },
+        { "@type": "ListItem", "position": 2, "name": "PDF Tools", "item": `${SITE_URL}/#tools` },
         { "@type": "ListItem", "position": 3, "name": loaderData?.name ?? "Tool", "item": url }
       ]
     };
