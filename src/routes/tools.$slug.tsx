@@ -1,4 +1,4 @@
-import { createFileRoute, Link, notFound } from "@tanstack/react-router";
+﻿import { createFileRoute, Link, notFound } from "@tanstack/react-router";
 import {
   ArrowRight,
   ArrowLeft,
@@ -21,6 +21,8 @@ import { CropViewer } from "@/components/CropViewer";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
+import JSZip from "jszip";
 import {
   Select,
   SelectContent,
@@ -263,7 +265,7 @@ const previewTools = new Set([
 ]);
 
 function ToolPage() {
-  const { checkUsageLimit } = useAuth();
+  const { checkUsageLimit, session } = useAuth();
   const { slug } = Route.useParams();
   const tool = getTool(slug)!;
   const [files, setFiles] = useState<File[]>([]);
@@ -278,6 +280,10 @@ function ToolPage() {
   const [cropPreviewPage, setCropPreviewPage] = useState(0);
   // For organize / reorder
   const [pageOrder, setPageOrder] = useState<number[] | null>(null);
+
+  const [batchMode, setBatchMode] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<Record<string, "queued" | "processing" | "done" | "failed">>({});
+
   // Signature canvas
   const sigCanvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
@@ -405,7 +411,82 @@ function ToolPage() {
     if (!checkUsageLimit()) {
       return;
     }
-    
+
+    if (batchMode && files.length > 0) {
+      const isPaid = !!session; // Assuming session means paid/authenticated for now
+      const maxFiles = isPaid ? 50 : 3;
+      if (files.length > maxFiles) {
+        setError(`Batch limit exceeded. Free tier max is 3, Paid tier max is 50. You uploaded ${files.length}.`);
+        return;
+      }
+      
+      setBusy(true);
+      setError(null);
+      
+      const initialProgress: Record<string, "queued" | "processing" | "done" | "failed"> = {};
+      files.forEach((f) => {
+        initialProgress[f.name] = "queued";
+      });
+      setBatchProgress(initialProgress);
+
+      const runSingleFile = async (file: File): Promise<OutputFile[]> => {
+        let out: OutputFile[] = [];
+        switch (slug) {
+          case "split-pdf": out = await splitPdf(file, opts.splitMode, opts.ranges); break;
+          case "remove-pages": out = await selectPages(file, opts.ranges, "remove"); break;
+          case "extract-pages": out = await selectPages(file, opts.ranges, "keep"); break;
+          case "rotate-pdf": out = await rotatePdf(file, opts.angle, opts.ranges); break;
+          case "word-to-pdf": out = await (await getPdfConvertOps()).wordToPdf(file); break;
+          case "powerpoint-to-pdf": out = await (await getPdfConvertOps()).powerpointToPdf(file); break;
+          case "excel-to-pdf": out = await (await getPdfConvertOps()).excelToPdf(file); break;
+          case "html-to-pdf": out = await (await getPdfConvertOps()).htmlToPdf(file); break;
+          case "pdf-to-jpg": out = await (await getPdfConvertOps()).pdfToJpg(file, opts.jpgQuality / 100); break;
+          case "pdf-to-word": out = await (await getPdfConvertOps()).pdfToWord(file); break;
+          case "pdf-to-powerpoint": out = await (await getPdfConvertOps()).pdfToPowerpoint(file); break;
+          case "pdf-to-excel": out = await (await getPdfConvertOps()).pdfToExcel(file); break;
+          case "pdf-to-pdfa": out = await pdfToPdfa(file); break;
+          case "add-page-numbers": out = await addPageNumbers(file, opts.position, opts.startAt); break;
+          case "watermark-pdf": out = await watermarkPdf(file, opts.text, opts.opacity, opts.wmAngle, opts.wmSize); break;
+          case "crop-pdf": out = await cropPdf(file, opts.pageCrops); break;
+          case "protect-pdf": out = await protectPdf(file, opts.userPassword, opts.ownerPassword); break;
+          case "unlock-pdf": out = await unlockPdf(file); break;
+          case "compress-pdf": out = await compressPdf(file, opts.level); break;
+          case "repair-pdf": out = await repairPdf(file); break;
+          case "ocr-pdf": out = await ocrPdf(file); break;
+          default: throw new Error("This tool isn't available for batch mode.");
+        }
+        return out;
+      };
+
+      const MAX_CONCURRENT = 2;
+      let currentIndex = 0;
+      let allOut: OutputFile[] = [];
+
+      const processNext = async () => {
+        if (currentIndex >= files.length) return;
+        const i = currentIndex++;
+        const file = files[i]!;
+        
+        setBatchProgress((p) => ({ ...p, [file.name]: "processing" }));
+        try {
+          const res = await runSingleFile(file);
+          allOut = allOut.concat(res);
+          setBatchProgress((p) => ({ ...p, [file.name]: "done" }));
+        } catch (e) {
+          console.error(e);
+          setBatchProgress((p) => ({ ...p, [file.name]: "failed" }));
+        }
+        await processNext();
+      };
+
+      const workers = Array.from({ length: Math.min(MAX_CONCURRENT, files.length) }).map(() => processNext());
+      await Promise.all(workers);
+      
+      setResults(allOut);
+      setBusy(false);
+      return;
+    }
+
     setBusy(true);
     setError(null);
     try {
@@ -642,9 +723,9 @@ function ToolPage() {
                 onChange={(v) => set("angle", v)}
                 options={[
                   { value: 0, label: "Default" },
-                  { value: 90, label: "90°" },
-                  { value: 180, label: "180°" },
-                  { value: 270, label: "270°" },
+                  { value: 90, label: "90Â°" },
+                  { value: 180, label: "180Â°" },
+                  { value: 270, label: "270Â°" },
                 ]}
               />
             </div>
@@ -716,7 +797,7 @@ function ToolPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label>Opacity — {Math.round(opts.opacity * 100)}%</Label>
+              <Label>Opacity â€” {Math.round(opts.opacity * 100)}%</Label>
               <Slider
                 value={[opts.opacity * 100]}
                 min={5}
@@ -726,7 +807,7 @@ function ToolPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label>Angle — {opts.wmAngle}°</Label>
+              <Label>Angle â€” {opts.wmAngle}Â°</Label>
               <Slider
                 value={[opts.wmAngle]}
                 min={0}
@@ -736,7 +817,7 @@ function ToolPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label>Size — {opts.wmSize}pt</Label>
+              <Label>Size â€” {opts.wmSize}pt</Label>
               <Slider
                 value={[opts.wmSize]}
                 min={12}
@@ -762,7 +843,7 @@ function ToolPage() {
             />
             <p className="text-xs text-muted-foreground">
               Rebuilds the document and strips metadata. Original:{" "}
-              {files[0] ? formatBytes(files[0].size) : "—"}
+              {files[0] ? formatBytes(files[0].size) : "â€”"}
             </p>
           </div>
         );
@@ -931,7 +1012,7 @@ function ToolPage() {
                 />
               </div>
               <div className="space-y-1">
-                <Label>Size (W×H)</Label>
+                <Label>Size (WÃ—H)</Label>
                 <div className="flex gap-1">
                   <Input
                     type="number"
@@ -978,7 +1059,7 @@ function ToolPage() {
         return (
           <div className="space-y-3">
             <p className="text-sm text-muted-foreground">
-              Black rectangles will be drawn over selected areas. Currently covers the full page —
+              Black rectangles will be drawn over selected areas. Currently covers the full page â€”
               adjust coordinates as needed.
             </p>
             <p className="text-xs text-muted-foreground">
@@ -1023,7 +1104,7 @@ function ToolPage() {
         return (
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label>Quality — {opts.jpgQuality}%</Label>
+              <Label>Quality â€” {opts.jpgQuality}%</Label>
               <Slider
                 value={[opts.jpgQuality]}
                 min={10}
@@ -1033,7 +1114,7 @@ function ToolPage() {
               />
             </div>
             <p className="text-xs text-muted-foreground">
-              Each page is rendered at 2× resolution and exported as a JPG.
+              Each page is rendered at 2Ã— resolution and exported as a JPG.
             </p>
           </div>
         );
@@ -1132,7 +1213,7 @@ function ToolPage() {
         {results ? (
           <div className="island mt-8 px-6 py-10 text-center">
             <h2 className="text-xl font-semibold">
-              Done — {results.length} file{results.length > 1 ? "s" : ""} ready
+              Done â€” {results.length} file{results.length > 1 ? "s" : ""} ready
             </h2>
             <p className="mt-1 text-sm text-muted-foreground">
               Your file was processed locally. Download it before leaving this page.
@@ -1154,8 +1235,24 @@ function ToolPage() {
               ))}
             </ul>
             {results.length > 1 && (
-              <Button variant="outline" className="mt-4 rounded-full" onClick={downloadAll}>
-                <Download className="size-4" /> Download all
+              <Button variant="outline" className="mt-4 rounded-full" onClick={async () => {
+                if (batchMode) {
+                  const zip = new JSZip();
+                  for (const out of results) {
+                    zip.file(out.name, out.blob);
+                  }
+                  const content = await zip.generateAsync({ type: "blob" });
+                  const url = URL.createObjectURL(content);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `batch-results-${Date.now()}.zip`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                } else {
+                  downloadAll();
+                }
+              }}>
+                <Download className="size-4" /> Download all {batchMode ? "as ZIP" : ""}
               </Button>
             )}
             <div className="mt-4">
@@ -1205,16 +1302,45 @@ function ToolPage() {
               ) : (
                 <>
                   <div className="island p-4 md:p-6">
+                    {!tool.multiple && (
+                      <div className="flex items-center justify-between mb-4 rounded-xl bg-accent p-3">
+                        <div className="space-y-0.5">
+                          <Label htmlFor="batch-mode" className="text-sm font-medium">Batch Mode</Label>
+                          <p className="text-xs text-muted-foreground">Process multiple files at once</p>
+                        </div>
+                        <Switch id="batch-mode" checked={batchMode} onCheckedChange={setBatchMode} />
+                      </div>
+                    )}
                     <DropZone
                       accepts={tool.accepts}
-                      multiple={tool.multiple}
+                      multiple={tool.multiple || batchMode}
                       files={files}
                       onChange={(f) => {
                         setFiles(f);
                         setError(null);
                       }}
-                      label={tool.multiple ? "Drop your files here" : "Drop your file here"}
+                      label={(tool.multiple || batchMode) ? "Drop your files here" : "Drop your file here"}
                     />
+                    
+                    {batchMode && files.length > 0 && Object.keys(batchProgress).length > 0 && (
+                      <div className="mt-4 space-y-2">
+                        <h4 className="text-sm font-semibold">Batch Progress</h4>
+                        <ul className="space-y-1 text-sm">
+                          {files.map((f) => (
+                            <li key={f.name} className="flex justify-between border-b pb-1">
+                              <span className="truncate w-3/4">{f.name}</span>
+                              <span className={cn(
+                                "capitalize text-xs font-medium",
+                                batchProgress[f.name] === 'done' ? "text-emerald-600" :
+                                batchProgress[f.name] === 'failed' ? "text-destructive" :
+                                batchProgress[f.name] === 'processing' ? "text-blue-600" :
+                                "text-muted-foreground"
+                              )}>{batchProgress[f.name]}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
 
                   {/* Real-time PDF Preview */}
@@ -1328,7 +1454,7 @@ function ToolPage() {
               >
                 {busy ? (
                   <>
-                    <Loader2 className="size-4 animate-spin" /> Processing…
+                    <Loader2 className="size-4 animate-spin" /> Processingâ€¦
                   </>
                 ) : (
                   <>

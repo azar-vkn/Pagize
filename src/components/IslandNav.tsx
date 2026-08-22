@@ -1,12 +1,12 @@
 import { Link } from "@tanstack/react-router";
-import { FileStack } from "lucide-react";
+import { FileStack, LayoutTemplate } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { navTools } from "@/lib/tools";
 import { useAuth } from "@/hooks/useAuth";
 
 export function IslandNav() {
-  const { session, setAuthModalOpen, logout } = useAuth();
+  const { session, loading, setAuthModalOpen, logout } = useAuth();
   const [shrunk, setShrunk] = useState(false);
 
   useEffect(() => {
@@ -46,19 +46,38 @@ export function IslandNav() {
                 {tool.short}
               </Link>
             ))}
-            <span className="mx-1 h-6 w-px bg-border" />
-            <button
-              onClick={() => setAuthModalOpen(true)}
-              className="rounded-full px-3.5 py-2 text-sm font-medium text-muted-foreground transition-all hover:bg-accent hover:text-accent-foreground"
+            <Link
+              to="/templates"
+              className="rounded-full px-3.5 py-2 text-sm font-medium text-muted-foreground transition-all hover:bg-accent hover:text-accent-foreground data-[status=active]:bg-primary data-[status=active]:text-primary-foreground"
             >
-              Sign In
-            </button>
-            {session && (
+              Templates
+            </Link>
+            <span className="mx-1 h-6 w-px bg-border" />
+            {loading ? (
+              // Placeholder keeps the nav from flicking "Sign In" at a user who
+              // turns out to be signed in once the stored session is read.
+              <span className="mx-2 h-5 w-16 animate-pulse rounded-full bg-muted" />
+            ) : session ? (
+              <>
+                <span
+                  className="max-w-[12rem] truncate px-2 text-sm font-medium text-foreground"
+                  title={session.user.email ?? undefined}
+                >
+                  {session.user.email ?? "Signed in"}
+                </span>
+                <button
+                  onClick={logout}
+                  className="rounded-full px-3.5 py-2 text-sm font-medium text-muted-foreground transition-all hover:bg-accent hover:text-accent-foreground"
+                >
+                  Log Out
+                </button>
+              </>
+            ) : (
               <button
-                onClick={logout}
+                onClick={() => setAuthModalOpen(true)}
                 className="rounded-full px-3.5 py-2 text-sm font-medium text-muted-foreground transition-all hover:bg-accent hover:text-accent-foreground"
               >
-                Log Out
+                Sign In
               </button>
             )}
           </div>
@@ -78,6 +97,13 @@ export function IslandNav() {
               {tool.short}
             </Link>
           ))}
+          <Link
+            to="/templates"
+            className="flex shrink-0 flex-col items-center gap-1 rounded-2xl px-3 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors data-[status=active]:bg-primary data-[status=active]:text-primary-foreground"
+          >
+            <LayoutTemplate className="size-4" />
+            Templates
+          </Link>
         </nav>
       </div>
     </>

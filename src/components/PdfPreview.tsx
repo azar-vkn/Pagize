@@ -26,6 +26,14 @@ type PdfPreviewProps = {
     ((margins: { top: number; right: number; bottom: number; left: number }) => void) | undefined;
   /** Actual dimensions of the PDF page in points, required for interactive cropping. */
   pageDimensions?: { width: number; height: number } | undefined;
+  /**
+   * "grid" (default) is the compact page picker used by the tools pages.
+   * "document" renders one large, readable page per row — for previewing a
+   * document you are composing rather than choosing pages from.
+   */
+  variant?: "grid" | "document" | undefined;
+  /** Overrides the render scale. Higher is crisper but slower. */
+  renderScale?: number | undefined;
   className?: string | undefined;
 };
 
@@ -41,16 +49,22 @@ export function PdfPreview({
   pageCrops,
   onCropChange,
   pageDimensions,
+  variant = "grid",
+  renderScale,
   className,
 }: PdfPreviewProps) {
   const [thumbnails, setThumbnails] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const dragIdx = useRef<number | null>(null);
 
+  // Document previews are meant to be read, so they need far more resolution
+  // than the page picker's thumbnails.
+  const scale = renderScale ?? (variant === "document" ? 1.5 : 0.5);
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    renderAllPages(file, 0.5)
+    renderAllPages(file, scale)
       .then((urls) => {
         if (!cancelled) {
           setThumbnails(urls);
@@ -63,7 +77,7 @@ export function PdfPreview({
     return () => {
       cancelled = true;
     };
-  }, [file]);
+  }, [file, scale]);
 
   if (loading) {
     return (
@@ -81,6 +95,27 @@ export function PdfPreview({
       <p className="py-8 text-center text-sm text-muted-foreground">
         Could not render preview for this file.
       </p>
+    );
+  }
+
+  // Large, readable, one page per row. None of the picker affordances
+  // (selection, drag-reorder, crop overlays) apply here.
+  if (variant === "document") {
+    return (
+      <div className={cn("flex flex-col items-center gap-8", className)}>
+        {thumbnails.map((thumb, i) => (
+          <figure key={i} className="w-full">
+            <img
+              src={thumb}
+              alt={`Page ${i + 1}`}
+              className="w-full rounded-xl border border-border bg-white shadow-md"
+            />
+            <figcaption className="mt-2.5 text-center text-xs font-medium text-muted-foreground">
+              Page {i + 1} of {thumbnails.length}
+            </figcaption>
+          </figure>
+        ))}
+      </div>
     );
   }
 

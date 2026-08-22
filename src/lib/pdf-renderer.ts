@@ -13,7 +13,26 @@ async function getPdfJs() {
   return pdfjsLib;
 }
 
+/**
+ * Bounded LRU. Live-preview screens regenerate a new File on every keystroke,
+ * so an unbounded cache would pin a PDFDocumentProxy — and its worker-side
+ * page data — for every intermediate document the user ever typed.
+ */
+const DOC_CACHE_LIMIT = 6;
 const docCache = new Map<string, PDFDocumentProxy>();
+
+function releaseDoc(doc: PDFDocumentProxy): void {
+  try {
+    // Named `destroy` historically, `cleanup` in newer builds; call whichever exists.
+    const disposable = doc as unknown as {
+      destroy?: () => unknown;
+      cleanup?: () => unknown;
+    };
+    void (disposable.destroy?.() ?? disposable.cleanup?.());
+  } catch {
+    /* releasing is best-effort */
+  }
+}
 
 async function getDoc(file: File): Promise<PDFDocumentProxy> {
   const pdfjs = await getPdfJs();
@@ -21,10 +40,25 @@ async function getDoc(file: File): Promise<PDFDocumentProxy> {
 
   const key = `${file.name}-${file.size}-${file.lastModified}`;
   const cached = docCache.get(key);
-  if (cached) return cached;
+  if (cached) {
+    // Re-insert so the most recently used entry is evicted last.
+    docCache.delete(key);
+    docCache.set(key, cached);
+    return cached;
+  }
+
   const data = new Uint8Array(await file.arrayBuffer());
   const doc = await pdfjs.getDocument({ data }).promise;
   docCache.set(key, doc);
+
+  while (docCache.size > DOC_CACHE_LIMIT) {
+    const oldestKey = docCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    const oldest = docCache.get(oldestKey);
+    docCache.delete(oldestKey);
+    if (oldest && oldest !== doc) releaseDoc(oldest);
+  }
+
   return doc;
 }
 export async function renderPage(file: File, pageIndex: number, scale = 1): Promise<string> {

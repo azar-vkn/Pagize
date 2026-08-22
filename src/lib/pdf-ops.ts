@@ -509,3 +509,9 @@ export async function editPdfReplaceText(
 
   return [await save(doc, `${baseName(file)}-edited.pdf`)];
 }
+
+/**
+ * Template documents are laid out by a dedicated renderer; re-exported here so
+ * callers keep importing every PDF operation from one module.
+ */
+export { generateTemplatePdf } from "./template-render";
