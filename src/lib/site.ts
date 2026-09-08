@@ -7,7 +7,7 @@
  *
  * No trailing slash — callers append their own path.
  */
-export const SITE_URL = "https://pagize.vercel.app";
+export const SITE_URL = "https://pagize.web.app";
 
 /** Absolute URL for a site-relative path, e.g. absoluteUrl("/tools/merge-pdf"). */
 export function absoluteUrl(path: string): string {

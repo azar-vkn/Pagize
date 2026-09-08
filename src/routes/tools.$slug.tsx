@@ -1,4 +1,4 @@
-﻿import { createFileRoute, Link, notFound } from "@tanstack/react-router";
+import { createFileRoute, Link, notFound } from "@tanstack/react-router";
 import {
   ArrowRight,
   ArrowLeft,
@@ -14,6 +14,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { IslandNav } from "@/components/IslandNav";
 import { SiteFooter } from "@/components/SiteFooter";
 import { DropZone, formatBytes } from "@/components/DropZone";
+import { ImagePreview } from "@/components/ImagePreview";
 import { SITE_URL } from "@/lib/site";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -251,18 +252,8 @@ function Segmented<T extends string | number>({
   );
 }
 
-// Tools that benefit from page preview
-const previewTools = new Set([
-  "merge-pdf",
-  "organize-pages",
-  "remove-pages",
-  "extract-pages",
-  "rotate-pdf",
-  "crop-pdf",
-  "sign-pdf",
-  "redact-pdf",
-  "edit-pdf",
-]);
+// Preview eligibility is derived from what a tool accepts rather than kept as a
+// hand-maintained list, so a newly added tool gets a preview automatically.
 
 function ToolPage() {
   const { checkUsageLimit, session } = useAuth();
@@ -339,6 +330,17 @@ function ToolPage() {
     return new Set(parsePageRanges(opts.ranges, pages));
   }, [opts.ranges, pages]);
 
+  /**
+   * Tools where clicking a thumbnail toggles that page in and out of
+   * `opts.ranges`. Split only takes a page selection in "by ranges" mode —
+   * "every page" splits the whole document and needs no input.
+   */
+  const pageSelectionEnabled =
+    slug === "remove-pages" ||
+    slug === "extract-pages" ||
+    slug === "rotate-pdf" ||
+    (slug === "split-pdf" && opts.splitMode === "ranges");
+
   const togglePage = useCallback(
     (pageIdx: number) => {
       if (!pages) return;
@@ -357,7 +359,7 @@ function ToolPage() {
   );
 
   const handlePageClick = (pageIdx: number) => {
-    if (slug === "remove-pages" || slug === "extract-pages" || slug === "rotate-pdf") {
+    if (pageSelectionEnabled) {
       togglePage(pageIdx);
     } else if (slug === "crop-pdf") {
       setCropPreviewPage(pageIdx);
@@ -663,7 +665,19 @@ function ToolPage() {
     </div>
   );
 
-  const showPreview = previewTools.has(slug) && files.length > 0 && !results;
+  // A tool taking PDFs previews its pages; one taking images previews the
+  // images that are about to become pages. Everything else (.docx, .pptx,
+  // .xlsx, .html) has no client-side page representation of its input, so it
+  // relies on the result preview shown after processing instead.
+  const acceptsPdf = tool.accepts.includes("application/pdf");
+  const acceptsImages = tool.accepts.includes("image/");
+  const showPreview = (acceptsPdf || acceptsImages) && files.length > 0 && !results;
+
+  /** First PDF among the outputs, previewed once processing finishes. */
+  const resultPreviewFile = useMemo(() => {
+    const pdf = results?.find((out) => out.name.toLowerCase().endsWith(".pdf"));
+    return pdf ? new File([pdf.blob], pdf.name, { type: "application/pdf" }) : null;
+  }, [results]);
 
   const optionsPanel = () => {
     switch (slug) {
@@ -681,8 +695,24 @@ function ToolPage() {
                 ]}
               />
             </div>
-            {opts.splitMode === "ranges" &&
-              rangeField("Each comma-separated group becomes its own file.")}
+            {opts.splitMode === "ranges" ? (
+              <>
+                {rangeField("Each comma-separated group becomes its own file.")}
+                {selectedPages.size > 0 && (
+                  <p className="text-sm font-medium text-emerald-600">
+                    {selectedPages.size} page{selectedPages.size > 1 ? "s" : ""} selected
+                  </p>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  Click page thumbnails to select/deselect pages.
+                </p>
+              </>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Every page becomes its own file
+                {pages ? ` — ${pages} file${pages > 1 ? "s" : ""}` : ""}.
+              </p>
+            )}
           </div>
         );
       case "remove-pages":
@@ -723,9 +753,9 @@ function ToolPage() {
                 onChange={(v) => set("angle", v)}
                 options={[
                   { value: 0, label: "Default" },
-                  { value: 90, label: "90Â°" },
-                  { value: 180, label: "180Â°" },
-                  { value: 270, label: "270Â°" },
+                  { value: 90, label: "90°" },
+                  { value: 180, label: "180°" },
+                  { value: 270, label: "270°" },
                 ]}
               />
             </div>
@@ -797,7 +827,7 @@ function ToolPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label>Opacity â€” {Math.round(opts.opacity * 100)}%</Label>
+              <Label>Opacity — {Math.round(opts.opacity * 100)}%</Label>
               <Slider
                 value={[opts.opacity * 100]}
                 min={5}
@@ -807,7 +837,7 @@ function ToolPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label>Angle â€” {opts.wmAngle}Â°</Label>
+              <Label>Angle — {opts.wmAngle}°</Label>
               <Slider
                 value={[opts.wmAngle]}
                 min={0}
@@ -817,7 +847,7 @@ function ToolPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label>Size â€” {opts.wmSize}pt</Label>
+              <Label>Size — {opts.wmSize}pt</Label>
               <Slider
                 value={[opts.wmSize]}
                 min={12}
@@ -843,7 +873,7 @@ function ToolPage() {
             />
             <p className="text-xs text-muted-foreground">
               Rebuilds the document and strips metadata. Original:{" "}
-              {files[0] ? formatBytes(files[0].size) : "â€”"}
+              {files[0] ? formatBytes(files[0].size) : "—"}
             </p>
           </div>
         );
@@ -1012,7 +1042,7 @@ function ToolPage() {
                 />
               </div>
               <div className="space-y-1">
-                <Label>Size (WÃ—H)</Label>
+                <Label>Size (W×H)</Label>
                 <div className="flex gap-1">
                   <Input
                     type="number"
@@ -1059,7 +1089,7 @@ function ToolPage() {
         return (
           <div className="space-y-3">
             <p className="text-sm text-muted-foreground">
-              Black rectangles will be drawn over selected areas. Currently covers the full page â€”
+              Black rectangles will be drawn over selected areas. Currently covers the full page —
               adjust coordinates as needed.
             </p>
             <p className="text-xs text-muted-foreground">
@@ -1104,7 +1134,7 @@ function ToolPage() {
         return (
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label>Quality â€” {opts.jpgQuality}%</Label>
+              <Label>Quality — {opts.jpgQuality}%</Label>
               <Slider
                 value={[opts.jpgQuality]}
                 min={10}
@@ -1114,7 +1144,7 @@ function ToolPage() {
               />
             </div>
             <p className="text-xs text-muted-foreground">
-              Each page is rendered at 2Ã— resolution and exported as a JPG.
+              Each page is rendered at 2× resolution and exported as a JPG.
             </p>
           </div>
         );
@@ -1213,7 +1243,7 @@ function ToolPage() {
         {results ? (
           <div className="island mt-8 px-6 py-10 text-center">
             <h2 className="text-xl font-semibold">
-              Done â€” {results.length} file{results.length > 1 ? "s" : ""} ready
+              Done — {results.length} file{results.length > 1 ? "s" : ""} ready
             </h2>
             <p className="mt-1 text-sm text-muted-foreground">
               Your file was processed locally. Download it before leaving this page.
@@ -1234,6 +1264,23 @@ function ToolPage() {
                 </li>
               ))}
             </ul>
+            {resultPreviewFile && (
+              <div className="mx-auto mt-8 max-w-3xl text-left">
+                <h3 className="mb-3 text-sm font-semibold text-muted-foreground">
+                  Page Preview
+                  {results.length > 1 ? ` — ${resultPreviewFile.name}` : ""}
+                </h3>
+                <Suspense
+                  fallback={
+                    <div className="flex justify-center py-8">
+                      <Loader2 className="size-6 animate-spin text-muted-foreground" />
+                    </div>
+                  }
+                >
+                  <PdfPreview file={resultPreviewFile} />
+                </Suspense>
+              </div>
+            )}
             {results.length > 1 && (
               <Button variant="outline" className="mt-4 rounded-full" onClick={async () => {
                 if (batchMode) {
@@ -1374,7 +1421,10 @@ function ToolPage() {
                           </div>
                         )}
                       </h3>
-                      {slug === "crop-pdf" ? (
+                      {!acceptsPdf ? (
+                        // Image inputs: showPreview guarantees images here.
+                        <ImagePreview files={files} />
+                      ) : slug === "crop-pdf" ? (
                         <div className="space-y-6">
                           <CropViewer
                             file={files[0]}
@@ -1413,21 +1463,9 @@ function ToolPage() {
                       ) : (
                         <PdfPreview
                           file={files[0]}
-                          selectedPages={
-                            slug === "remove-pages" ||
-                            slug === "extract-pages" ||
-                            slug === "rotate-pdf"
-                              ? selectedPages
-                              : undefined
-                          }
+                          selectedPages={pageSelectionEnabled ? selectedPages : undefined}
                           selectionMode={slug === "remove-pages" ? "remove" : "keep"}
-                          onPageClick={
-                            slug === "remove-pages" ||
-                            slug === "extract-pages" ||
-                            slug === "rotate-pdf"
-                              ? handlePageClick
-                              : undefined
-                          }
+                          onPageClick={pageSelectionEnabled ? handlePageClick : undefined}
                           rotationAngle={slug === "rotate-pdf" ? opts.angle : 0}
                           draggable={slug === "organize-pages"}
                           pageOrder={
@@ -1454,7 +1492,7 @@ function ToolPage() {
               >
                 {busy ? (
                   <>
-                    <Loader2 className="size-4 animate-spin" /> Processingâ€¦
+                    <Loader2 className="size-4 animate-spin" /> Processing…
                   </>
                 ) : (
                   <>

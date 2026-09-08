@@ -12,25 +12,133 @@ const baseName = (file: File) => file.name.replace(/\.[^.]+$/, "");
 
 // ────────────── CONVERT TO PDF ──────────────
 
-/** Parse DOCX (a ZIP of XML) and render the text content into a PDF. */
+/** Parse DOCX (a ZIP of XML) and render its text and images into a PDF. */
 export async function wordToPdf(file: File): Promise<OutputFile[]> {
   const zip = await JSZip.loadAsync(await file.arrayBuffer());
   const docXml = await zip.file("word/document.xml")?.async("string");
   if (!docXml) throw new Error("Could not read DOCX content. Make sure it's a valid .docx file.");
 
-  // Extract text from XML paragraphs
-  const paragraphs: string[] = [];
-  const matches = docXml.matchAll(/<w:p[\s>][\s\S]*?<\/w:p>/g);
-  for (const match of matches) {
-    const texts: string[] = [];
-    const runs = match[0].matchAll(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g);
-    for (const run of runs) {
-      texts.push(run[1] ?? "");
-    }
-    paragraphs.push(texts.join(""));
+  // Map relationship ids (rId…) to their media targets so <a:blip r:embed> and
+  // VML <v:imagedata r:id> references can be resolved to files in word/media.
+  const relsXml = (await zip.file("word/_rels/document.xml.rels")?.async("string")) ?? "";
+  const relTargets = new Map<string, string>();
+  for (const m of relsXml.matchAll(/<Relationship\b[^>]*?\bId="([^"]+)"[^>]*?\bTarget="([^"]+)"/g)) {
+    relTargets.set(m[1]!, m[2]!);
   }
 
-  return renderTextToPdf(paragraphs, `${baseName(file)}.pdf`);
+  const imageCache = new Map<string, PdfBlock["image"] | null>();
+  const loadImage = async (rId: string): Promise<PdfBlock["image"] | null> => {
+    if (imageCache.has(rId)) return imageCache.get(rId)!;
+    let result: PdfBlock["image"] | null = null;
+    const target = relTargets.get(rId);
+    if (target && !/^https?:/i.test(target)) {
+      // Targets are relative to the word/ folder (e.g. "media/image1.png").
+      const rel = target.replace(/^\/+/, "").replace(/^\.\.\//, "");
+      const entry = zip.file(`word/${rel}`) ?? zip.file(rel);
+      if (entry) {
+        const bytes = await entry.async("uint8array");
+        const ext = (target.split(".").pop() ?? "").toLowerCase();
+        result = await normalizeImageForPdf(bytes, ext);
+      }
+    }
+    imageCache.set(rId, result);
+    return result;
+  };
+
+  const blocks: PdfBlock[] = [];
+  // Walk paragraphs in document order, emitting text then any images they hold.
+  // Only the top-level <a:blip> is matched: an SVG picture also carries an
+  // <asvg:svgBlip>, but its <a:blip> is the raster fallback we can embed, so
+  // matching both would emit the same image twice.
+  for (const pm of docXml.matchAll(/<w:p\b[\s\S]*?<\/w:p>/g)) {
+    const pXml = pm[0];
+    const text = extractParagraphText(pXml);
+    if (text.trim()) blocks.push({ text });
+    for (const bm of pXml.matchAll(/<a:blip\b[^>]*?r:embed="([^"]+)"/g)) {
+      const img = await loadImage(bm[1]!);
+      if (img) blocks.push({ text: "", image: img });
+    }
+    for (const vm of pXml.matchAll(/<v:imagedata\b[^>]*?r:id="([^"]+)"/g)) {
+      const img = await loadImage(vm[1]!);
+      if (img) blocks.push({ text: "", image: img });
+    }
+  }
+
+  return renderBlocksToPdf(blocks, `${baseName(file)}.pdf`);
+}
+
+const IMAGE_MIME: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  bmp: "image/bmp",
+  webp: "image/webp",
+  ico: "image/x-icon",
+  tif: "image/tiff",
+  tiff: "image/tiff",
+};
+
+/**
+ * pdf-lib can only embed PNG and JPEG. PNG/JPEG pass through untouched; any
+ * other format the browser can decode (GIF, BMP, WEBP, ICO, and TIFF where the
+ * browser supports it) is rasterized to PNG via a canvas. Vector metafiles that
+ * no browser can decode (EMF/WMF) resolve to null and are skipped.
+ */
+async function normalizeImageForPdf(
+  bytes: Uint8Array,
+  ext: string,
+): Promise<PdfBlock["image"] | null> {
+  if (ext === "png") return { bytes, kind: "png" };
+  if (ext === "jpg" || ext === "jpeg") return { bytes, kind: "jpg" };
+  const png = await rasterizeToPng(bytes, IMAGE_MIME[ext] ?? "application/octet-stream");
+  return png ? { bytes: png, kind: "png" } : null;
+}
+
+/** Decode an image with the browser and re-encode it as PNG, or null if it can't. */
+async function rasterizeToPng(bytes: Uint8Array, mime: string): Promise<Uint8Array | null> {
+  if (typeof createImageBitmap === "undefined") return null;
+  try {
+    const bitmap = await createImageBitmap(new Blob([bytes as BlobPart], { type: mime }));
+    const { width, height } = bitmap;
+    let pngBlob: Blob | null = null;
+    if (typeof OffscreenCanvas !== "undefined") {
+      const canvas = new OffscreenCanvas(width, height);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      ctx.drawImage(bitmap, 0, 0);
+      pngBlob = await canvas.convertToBlob({ type: "image/png" });
+    } else if (typeof document !== "undefined") {
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return null;
+      ctx.drawImage(bitmap, 0, 0);
+      pngBlob = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/png"));
+    }
+    bitmap.close?.();
+    return pngBlob ? new Uint8Array(await pngBlob.arrayBuffer()) : null;
+  } catch {
+    return null; // format the browser can't decode (EMF/WMF, TIFF outside Safari)
+  }
+}
+
+/**
+ * Text of one <w:p>, joined in document order and decoded. <w:tab/> becomes a
+ * tab and <w:br/>/<w:cr/> a newline so runs don't collapse into each other.
+ */
+function extractParagraphText(pXml: string): string {
+  let out = "";
+  const tokens = pXml.matchAll(
+    /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:tab\b[^>]*\/?>|<w:br\b[^>]*\/?>|<w:cr\b[^>]*\/?>/g,
+  );
+  for (const t of tokens) {
+    if (t[1] !== undefined) out += decodeXmlEntities(t[1]);
+    else if (t[0].startsWith("<w:tab")) out += "\t";
+    else out += "\n";
+  }
+  return out;
 }
 
 /** Parse PPTX and render slide text into a PDF (one page per slide). */
@@ -88,39 +196,110 @@ export async function powerpointToPdf(file: File): Promise<OutputFile[]> {
 }
 
 /** Parse XLSX and render cell data as a table in a PDF. */
+/** Reverses the XML escaping used throughout the XLSX parts. */
+function decodeXmlEntities(text: string): string {
+  return text
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, d: string) => String.fromCodePoint(Number(d)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, h: string) => String.fromCodePoint(parseInt(h, 16)))
+    // Last, so an escaped entity like &amp;lt; does not decode twice.
+    .replace(/&amp;/g, "&");
+}
+
+/**
+ * One entry per <si>. A rich-text <si> holds several <t> runs that together
+ * form a single string — treating each run as its own entry would shift every
+ * subsequent index and mis-label the rest of the sheet.
+ */
+function parseSharedStrings(xml: string): string[] {
+  const out: string[] = [];
+  for (const si of xml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/g)) {
+    const runs = Array.from((si[1] ?? "").matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g));
+    out.push(decodeXmlEntities(runs.map((r) => r[1] ?? "").join("")));
+  }
+  return out;
+}
+
+/** Cell reference to zero-based column index: A -> 0, B -> 1, AA -> 26. */
+function columnIndexFromRef(ref: string): number {
+  const letters = /^[A-Za-z]+/.exec(ref)?.[0] ?? "";
+  let index = 0;
+  for (const ch of letters.toUpperCase()) index = index * 26 + (ch.charCodeAt(0) - 64);
+  return index - 1;
+}
+
+/** Truncates to what actually fits the column, with an ellipsis when clipped. */
+function fitText(
+  text: string,
+  font: { widthOfTextAtSize: (t: string, s: number) => number },
+  size: number,
+  maxWidth: number,
+): string {
+  if (font.widthOfTextAtSize(text, size) <= maxWidth) return text;
+  let clipped = text;
+  while (clipped.length > 1 && font.widthOfTextAtSize(clipped + "...", size) > maxWidth) {
+    clipped = clipped.slice(0, -1);
+  }
+  return clipped + "...";
+}
+
 export async function excelToPdf(file: File): Promise<OutputFile[]> {
   const zip = await JSZip.loadAsync(await file.arrayBuffer());
 
-  // Read shared strings
   const sharedStringsXml = (await zip.file("xl/sharedStrings.xml")?.async("string")) ?? "";
-  const sharedStrings: string[] = [];
-  const ssMatches = sharedStringsXml.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g);
-  for (const m of ssMatches) {
-    sharedStrings.push(m[1] ?? "");
-  }
+  const sharedStrings = parseSharedStrings(sharedStringsXml);
 
-  // Read first sheet
-  const sheetXml = await zip.file("xl/worksheets/sheet1.xml")?.async("string");
+  // The first sheet is not always literally sheet1.xml.
+  const sheetPath =
+    zip.file("xl/worksheets/sheet1.xml")
+      ? "xl/worksheets/sheet1.xml"
+      : Object.keys(zip.files)
+          .filter((n) => /^xl\/worksheets\/[^/]+\.xml$/.test(n))
+          .sort()[0];
+  const sheetXml = sheetPath ? await zip.file(sheetPath)?.async("string") : undefined;
   if (!sheetXml) throw new Error("Could not read XLSX data. Make sure it's a valid .xlsx file.");
 
   const rows: string[][] = [];
-  const rowMatches = sheetXml.matchAll(/<row[\s>][\s\S]*?<\/row>/g);
-  for (const rowMatch of rowMatches) {
+  for (const rowMatch of sheetXml.matchAll(/<row[\s>][\s\S]*?<\/row>/g)) {
     const cells: string[] = [];
-    const cellMatches = rowMatch[0].matchAll(
-      /<c[\s][^>]*?(?:t="s"[^>]*)?>[\s\S]*?<v>([\s\S]*?)<\/v>[\s\S]*?<\/c>|<c[\s][^>]*?>[\s\S]*?<v>([\s\S]*?)<\/v>[\s\S]*?<\/c>/g,
-    );
-    for (const cm of cellMatches) {
-      const isShared = rowMatch[0].includes('t="s"');
-      const val = cm[1] ?? cm[2] ?? "";
-      if (isShared && sharedStrings[parseInt(val, 10)] !== undefined) {
-        cells.push(sharedStrings[parseInt(val, 10)]!);
+
+    // Matches both self-closing empty cells and cells with a body.
+    for (const cell of rowMatch[0].matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+      const attrs = cell[1] ?? "";
+      const body = cell[2] ?? "";
+      // Type is per cell, not per row: a row can mix text, numbers and formulas.
+      const type = /\bt="([^"]+)"/.exec(attrs)?.[1] ?? "n";
+
+      let value: string;
+      if (type === "inlineStr") {
+        // Text lives in <is><t>, never in <v>.
+        const runs = Array.from(body.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g));
+        value = decodeXmlEntities(runs.map((r) => r[1] ?? "").join(""));
       } else {
-        cells.push(val);
+        const raw = /<v>([\s\S]*?)<\/v>/.exec(body)?.[1] ?? "";
+        if (type === "s") {
+          value = sharedStrings[Number(raw)] ?? "";
+        } else if (type === "b") {
+          value = raw === "1" ? "TRUE" : "FALSE";
+        } else {
+          value = decodeXmlEntities(raw);
+        }
       }
+
+      // Place by the cell's own reference so gaps keep their column.
+      const ref = /\br="([A-Za-z]+\d+)"/.exec(attrs)?.[1];
+      const col = ref ? columnIndexFromRef(ref) : cells.length;
+      while (cells.length < col) cells.push("");
+      cells[col] = value;
     }
-    if (cells.length > 0) rows.push(cells);
+
+    if (cells.some((c) => c.trim() !== "")) rows.push(cells);
   }
+
+  if (rows.length === 0) throw new Error("That sheet appears to be empty.");
 
   const doc = await PDFDocument.create();
   const font = await doc.embedFont(StandardFonts.Helvetica);
@@ -142,17 +321,12 @@ export async function excelToPdf(file: File): Promise<OutputFile[]> {
       page = doc.addPage([pageWidth, pageHeight]);
       yPos = pageHeight - margin;
     }
-    for (let col = 0; col < row.length; col++) {
+    for (let col = 0; col < maxCols; col++) {
       const x = margin + col * colWidth;
-      const cellText = (row[col] ?? "").substring(0, 20);
-      page.drawText(cellText, {
-        x: x + cellPadding,
-        y: yPos - fontSize - cellPadding,
-        size: fontSize,
-        font: rowIdx === 0 ? boldFont : font,
-        color: rgb(0.1, 0.1, 0.1),
-      });
-      // Draw cell border
+      const cellFont = rowIdx === 0 ? boldFont : font;
+
+      // The fill is opaque, so it has to be laid down before the text.
+      // Drawing it afterwards paints over every value and empties the table.
       page.drawRectangle({
         x,
         y: yPos - rowHeight,
@@ -161,6 +335,16 @@ export async function excelToPdf(file: File): Promise<OutputFile[]> {
         borderColor: rgb(0.8, 0.8, 0.8),
         borderWidth: 0.5,
         color: rowIdx === 0 ? rgb(0.95, 0.95, 0.95) : rgb(1, 1, 1),
+      });
+
+      const cellText = sanitizeForStandardFont(row[col] ?? "").replace(/\s+/g, " ").trim();
+      if (!cellText) continue;
+      page.drawText(fitText(cellText, cellFont, fontSize, colWidth - cellPadding * 2), {
+        x: x + cellPadding,
+        y: yPos - fontSize - cellPadding,
+        size: fontSize,
+        font: cellFont,
+        color: rgb(0.1, 0.1, 0.1),
       });
     }
     yPos -= rowHeight;
@@ -171,27 +355,86 @@ export async function excelToPdf(file: File): Promise<OutputFile[]> {
 }
 
 /** Parse an HTML file and render its text content to PDF. */
-export async function htmlToPdf(file: File): Promise<OutputFile[]> {
-  const html = await file.text();
-  // Parse with DOMParser and extract text
-  const parser = new DOMParser();
-  const htmlDoc = parser.parseFromString(html, "text/html");
+/** Elements whose text is markup or machinery, never page content. */
+const NON_CONTENT_TAGS = new Set([
+  "SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "SVG", "IFRAME", "OBJECT", "CANVAS", "HEAD",
+]);
 
-  const title = htmlDoc.title || baseName(file);
-  const paragraphs: string[] = [];
+/** Elements that start a new paragraph in the output. */
+const BLOCK_TAGS = new Set([
+  "P", "DIV", "H1", "H2", "H3", "H4", "H5", "H6", "LI", "BLOCKQUOTE", "PRE",
+  "TD", "TH", "DT", "DD", "FIGCAPTION", "ADDRESS", "SECTION", "ARTICLE",
+  "HEADER", "FOOTER", "MAIN", "ASIDE", "NAV", "SUMMARY",
+]);
 
-  // Walk through body elements
-  const walker = htmlDoc.createTreeWalker(htmlDoc.body, NodeFilter.SHOW_TEXT);
-  let node: Node | null;
-  while ((node = walker.nextNode())) {
-    const text = node.textContent?.trim();
-    if (text) paragraphs.push(text);
+const HEADING_SIZES: Record<string, number> = {
+  H1: 22, H2: 18, H3: 15, H4: 13, H5: 12, H6: 12,
+};
+
+function hasBlockDescendant(el: Element): boolean {
+  for (const child of Array.from(el.children)) {
+    if (NON_CONTENT_TAGS.has(child.tagName)) continue;
+    if (BLOCK_TAGS.has(child.tagName) || hasBlockDescendant(child)) return true;
+  }
+  return false;
+}
+
+/**
+ * Collect one block per innermost block-level element.
+ *
+ * Taking `textContent` of a leaf block keeps a sentence together across its
+ * inline markup — walking raw text nodes instead would split
+ * `<p>Hello <b>world</b>!</p>` into three separate paragraphs.
+ */
+function collectHtmlBlocks(el: Element, out: PdfBlock[]): void {
+  if (NON_CONTENT_TAGS.has(el.tagName)) return;
+
+  if (BLOCK_TAGS.has(el.tagName) && !hasBlockDescendant(el)) {
+    const text = normalizeWhitespace(el.textContent ?? "");
+    if (!text) return;
+    const headingSize = HEADING_SIZES[el.tagName];
+    out.push({
+      text,
+      ...(headingSize ? { size: headingSize, bold: true, spaceBefore: 0.6 } : {}),
+      ...(el.tagName === "LI" ? { bullet: true } : {}),
+    });
+    return;
   }
 
-  if (paragraphs.length === 0) paragraphs.push("(Empty document)");
+  for (const child of Array.from(el.children)) collectHtmlBlocks(child, out);
+}
 
-  const result = await renderTextToPdf(paragraphs, `${title}.pdf`);
-  return result;
+/** Parse an HTML file and render its readable content to PDF. */
+export async function htmlToPdf(file: File): Promise<OutputFile[]> {
+  const html = await file.text();
+  const htmlDoc = new DOMParser().parseFromString(html, "text/html");
+
+  const title = normalizeWhitespace(htmlDoc.title) || baseName(file);
+  const blocks: PdfBlock[] = [];
+
+  if (htmlDoc.body) {
+    collectHtmlBlocks(htmlDoc.body, blocks);
+
+    // A body with no block elements at all (bare text, or a wrapper we do not
+    // treat as a block) still has readable content worth rendering.
+    if (blocks.length === 0) {
+      for (const el of Array.from(htmlDoc.body.querySelectorAll("script, style, noscript, template"))) {
+        el.remove();
+      }
+      const text = normalizeWhitespace(htmlDoc.body.textContent ?? "");
+      if (text) blocks.push({ text });
+    }
+  }
+
+  if (blocks.length === 0) blocks.push({ text: "(Empty document)" });
+
+  // Lead with the document title, unless the page already opens with it as a
+  // heading — <title> matching <h1> is the common case, not a special one.
+  if (blocks[0]?.text.trim().toLowerCase() !== title.trim().toLowerCase()) {
+    blocks.unshift({ text: title, size: 22, bold: true });
+  }
+
+  return renderBlocksToPdf(blocks, `${title}.pdf`);
 }
 
 // ────────────── CONVERT FROM PDF ──────────────
@@ -353,20 +596,25 @@ export async function pdfToWord(file: File): Promise<OutputFile[]> {
 /** Extract text from PDF and create a simple PPTX file. */
 export async function pdfToPowerpoint(file: File): Promise<OutputFile[]> {
   const texts = await extractAllText(file);
+  // Always emit at least one slide so the deck is valid even for an empty PDF.
+  const slideCount = Math.max(texts.length, 1);
   const zip = new JSZip();
-  zip.file("[Content_Types].xml", contentTypesPptx(texts.length));
+  zip.file("[Content_Types].xml", contentTypesPptx(slideCount));
   zip.file("_rels/.rels", relsPptx);
-  zip.file("ppt/_rels/presentation.xml.rels", pptPresentationRels(texts.length));
-  zip.file("ppt/presentation.xml", pptPresentation(texts.length));
+  zip.file("ppt/_rels/presentation.xml.rels", pptPresentationRels(slideCount));
+  zip.file("ppt/presentation.xml", pptPresentation(slideCount));
+  zip.file("ppt/theme/theme1.xml", themeXml);
+  zip.file("ppt/slideMasters/slideMaster1.xml", slideMasterXml);
+  zip.file("ppt/slideMasters/_rels/slideMaster1.xml.rels", slideMasterRels);
+  // One shared layout for every slide (the previous per-slide layouts left the
+  // master and content types out of sync, which is what corrupted the file).
+  zip.file("ppt/slideLayouts/slideLayout1.xml", slideLayoutXml);
+  zip.file("ppt/slideLayouts/_rels/slideLayout1.xml.rels", slideLayoutRels);
 
-  for (let i = 0; i < texts.length; i++) {
+  for (let i = 0; i < slideCount; i++) {
     zip.file(`ppt/slides/_rels/slide${i + 1}.xml.rels`, slideRels);
     zip.file(`ppt/slides/slide${i + 1}.xml`, slideXml(texts[i] ?? "", i + 1));
-    zip.file(`ppt/slideLayouts/slideLayout${i + 1}.xml`, slideLayoutXml);
-    zip.file(`ppt/slideLayouts/_rels/slideLayout${i + 1}.xml.rels`, slideLayoutRels);
   }
-  zip.file("ppt/slideMasters/slideMaster1.xml", slideMasterXml);
-  zip.file("ppt/slideMasters/_rels/slideMaster1.xml.rels", slideMasterRels(texts.length));
 
   const blob = await zip.generateAsync({
     type: "blob",
@@ -418,6 +666,28 @@ function escapeXml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/**
+ * The standard PDF fonts are WinAnsi-encoded and pdf-lib throws on any glyph
+ * the encoding lacks. WinAnsi covers Latin-1 plus the common typographic marks
+ * (em dash, smart quotes, ellipsis, bullet), but not CJK, Cyrillic, Arabic or
+ * emoji — all of which appear in real documents. Fold what maps cleanly and
+ * drop the rest rather than failing the whole conversion.
+ */
+function sanitizeForStandardFont(input: string): string {
+  return (input ?? "")
+    .replace(/\r\n?/g, "\n")
+    // WinAnsi does have en and em dash, so keep those; fold only the ones it lacks.
+    .replace(/[‐‑‒―]/g, "-")
+    .replace(/ /g, " ")
+    .replace(/\t/g, "    ")
+    .replace(/[^\n\x20-\x7E\xA0-\xFF‘’“”–—…•™]/g, "");
+}
+
+/** Collapses HTML's insignificant whitespace into single spaces. */
+function normalizeWhitespace(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
 function wrapText(
   text: string,
   font: { widthOfTextAtSize: (t: string, s: number) => number },
@@ -440,31 +710,88 @@ function wrapText(
   return lines.length > 0 ? lines : [""];
 }
 
-async function renderTextToPdf(paragraphs: string[], filename: string): Promise<OutputFile[]> {
+/** One rendered paragraph, optionally styled as a heading or list item. */
+type PdfBlock = {
+  text: string;
+  size?: number;
+  bold?: boolean;
+  bullet?: boolean;
+  /** Extra space above, as a multiple of the line height. */
+  spaceBefore?: number;
+  /** When set, the block renders an embedded image instead of text. */
+  image?: { bytes: Uint8Array; kind: "png" | "jpg" };
+};
+
+async function renderBlocksToPdf(blocks: PdfBlock[], filename: string): Promise<OutputFile[]> {
   const doc = await PDFDocument.create();
   const font = await doc.embedFont(StandardFonts.Helvetica);
-  const size = 12;
-  const lineHeight = size * 1.4;
+  const boldFont = await doc.embedFont(StandardFonts.HelveticaBold);
   const margin = 50;
   const pageWidth = 612;
   const pageHeight = 792;
-  const maxWidth = pageWidth - margin * 2;
+  const bodySize = 12;
 
   let page = doc.addPage([pageWidth, pageHeight]);
   let y = pageHeight - margin;
 
-  for (const para of paragraphs) {
-    if (!para.trim()) {
+  for (const block of blocks) {
+    const size = block.size ?? bodySize;
+    const lineHeight = size * 1.4;
+    const activeFont = block.bold ? boldFont : font;
+    const indent = block.bullet ? 16 : 0;
+    const maxWidth = pageWidth - margin * 2 - indent;
+
+    // Image block: embed and draw scaled to fit the text column / page.
+    if (block.image) {
+      let embedded;
+      try {
+        embedded =
+          block.image.kind === "png"
+            ? await doc.embedPng(block.image.bytes)
+            : await doc.embedJpg(block.image.bytes);
+      } catch {
+        continue; // skip images pdf-lib can't decode (e.g. EMF/WMF/GIF)
+      }
+      const availWidth = pageWidth - margin * 2;
+      const availHeight = pageHeight - margin * 2;
+      let scale = Math.min(1, availWidth / embedded.width);
+      if (embedded.height * scale > availHeight) scale = availHeight / embedded.height;
+      const drawW = embedded.width * scale;
+      const drawH = embedded.height * scale;
+      if (y - drawH < margin) {
+        page = doc.addPage([pageWidth, pageHeight]);
+        y = pageHeight - margin;
+      }
+      y -= drawH;
+      page.drawImage(embedded, { x: margin, y, width: drawW, height: drawH });
+      y -= lineHeight * 0.5; // spacing after image
+      continue;
+    }
+
+    const text = sanitizeForStandardFont(block.text);
+    if (!text.trim()) {
       y -= lineHeight;
       continue;
     }
-    const lines = wrapText(para, font, size, maxWidth);
-    for (const line of lines) {
+
+    y -= lineHeight * (block.spaceBefore ?? 0);
+
+    const lines = wrapText(text, activeFont, size, maxWidth);
+    for (const [i, line] of lines.entries()) {
       if (y < margin) {
         page = doc.addPage([pageWidth, pageHeight]);
         y = pageHeight - margin;
       }
-      page.drawText(line, { x: margin, y, size, font, color: rgb(0.1, 0.1, 0.1) });
+      if (block.bullet && i === 0) {
+        page.drawText("-", { x: margin, y, size, font: activeFont, color: rgb(0.4, 0.4, 0.4) });
+      }
+      page.drawText(line, {
+        x: margin + indent,
+        y,
+        size,
+        font: activeFont,
+        color: rgb(0.1, 0.1, 0.1),
+      });
       y -= lineHeight;
     }
     y -= lineHeight * 0.3; // paragraph spacing
@@ -527,7 +854,22 @@ const xlWorkbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>
 </workbook>`;
 
-// PPTX helpers
+// PPTX helpers — a minimal but spec-valid OOXML presentation package.
+// OOXML is strict: a master needs a colour map, a layout list and a theme, the
+// presentation needs a master reference and a slide size, and every slide needs
+// a layout relationship. Missing any of these makes PowerPoint refuse the file.
+
+const A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
+const P_NS = "http://schemas.openxmlformats.org/presentationml/2006/main";
+const R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types";
+const REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships";
+
+/** Remove characters that are illegal in XML 1.0 so the parts stay well-formed. */
+function stripInvalidXmlChars(s: string): string {
+  return (s ?? "").replace(/[^\x09\x0A\x0D\x20-퟿-�]/g, "");
+}
+
 function contentTypesPptx(slideCount: number) {
   const overrides = Array.from(
     { length: slideCount },
@@ -535,27 +877,32 @@ function contentTypesPptx(slideCount: number) {
       `<Override PartName="/ppt/slides/slide${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`,
   ).join("");
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Types xmlns="${CT_NS}">
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
 <Default Extension="xml" ContentType="application/xml"/>
 <Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+<Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>
+<Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/>
+<Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>
 ${overrides}
 </Types>`;
 }
 
 const relsPptx = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+<Relationships xmlns="${REL_NS}">
+<Relationship Id="rId1" Type="${R_NS}/officeDocument" Target="ppt/presentation.xml"/>
 </Relationships>`;
 
 function pptPresentationRels(slideCount: number) {
-  const rels = Array.from(
+  const slideRelsList = Array.from(
     { length: slideCount },
     (_, i) =>
-      `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide${i + 1}.xml"/>`,
+      `<Relationship Id="rId${i + 1}" Type="${R_NS}/slide" Target="slides/slide${i + 1}.xml"/>`,
   ).join("");
+  // Master relationship id follows the slide ids so they never collide.
+  const masterRel = `<Relationship Id="rId${slideCount + 1}" Type="${R_NS}/slideMaster" Target="slideMasters/slideMaster1.xml"/>`;
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rels}</Relationships>`;
+<Relationships xmlns="${REL_NS}">${slideRelsList}${masterRel}</Relationships>`;
 }
 
 function pptPresentation(slideCount: number) {
@@ -564,45 +911,109 @@ function pptPresentation(slideCount: number) {
     (_, i) => `<p:sldId id="${256 + i}" r:id="rId${i + 1}"/>`,
   ).join("");
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-<p:sldIdLst>${slideIds}</p:sldIdLst></p:presentation>`;
+<p:presentation xmlns:a="${A_NS}" xmlns:r="${R_NS}" xmlns:p="${P_NS}">
+<p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId${slideCount + 1}"/></p:sldMasterIdLst>
+<p:sldIdLst>${slideIds}</p:sldIdLst>
+<p:sldSz cx="9144000" cy="6858000" type="screen4x3"/>
+<p:notesSz cx="6858000" cy="9144000"/>
+</p:presentation>`;
 }
 
+// Every slide points at the single shared layout.
 const slideRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>`;
+<Relationships xmlns="${REL_NS}">
+<Relationship Id="rId1" Type="${R_NS}/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
+</Relationships>`;
 
 function slideXml(text: string, slideNum: number) {
+  // One paragraph per line so wrapping/line breaks survive; blank lines kept.
+  const paragraphs =
+    stripInvalidXmlChars(text)
+      .split("\n")
+      .map((line) => {
+        const t = line.trim();
+        return t
+          ? `<a:p><a:r><a:rPr lang="en-US" sz="1800"/><a:t>${escapeXml(t)}</a:t></a:r></a:p>`
+          : `<a:p/>`;
+      })
+      .join("") || `<a:p/>`;
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+<p:sld xmlns:a="${A_NS}" xmlns:r="${R_NS}" xmlns:p="${P_NS}">
 <p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>
 <p:sp><p:nvSpPr><p:cNvPr id="2" name="Title"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
 <p:spPr><a:xfrm><a:off x="457200" y="274638"/><a:ext cx="8229600" cy="1143000"/></a:xfrm></p:spPr>
-<p:txBody><a:bodyPr/><a:p><a:r><a:rPr lang="en-US" sz="2800" b="1"/><a:t>Slide ${slideNum}</a:t></a:r></a:p></p:txBody></p:sp>
+<p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="en-US" sz="2800" b="1"/><a:t>Slide ${slideNum}</a:t></a:r></a:p></p:txBody></p:sp>
 <p:sp><p:nvSpPr><p:cNvPr id="3" name="Content"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
 <p:spPr><a:xfrm><a:off x="457200" y="1600200"/><a:ext cx="8229600" cy="4525963"/></a:xfrm></p:spPr>
-<p:txBody><a:bodyPr/><a:p><a:r><a:rPr lang="en-US" sz="1800"/><a:t>${escapeXml(text)}</a:t></a:r></a:p></p:txBody></p:sp>
+<p:txBody><a:bodyPr wrap="square"/><a:lstStyle/>${paragraphs}</p:txBody></p:sp>
 </p:spTree></p:cSld></p:sld>`;
 }
 
 const slideLayoutXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<p:sldLayout xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" type="blank">
-<p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:spTree></p:cSld></p:sldLayout>`;
+<p:sldLayout xmlns:a="${A_NS}" xmlns:r="${R_NS}" xmlns:p="${P_NS}" type="blank" preserve="1">
+<p:cSld name="Blank"><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:spTree></p:cSld>
+<p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>`;
 
 const slideLayoutRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="../slideMasters/slideMaster1.xml"/>
+<Relationships xmlns="${REL_NS}">
+<Relationship Id="rId1" Type="${R_NS}/slideMaster" Target="../slideMasters/slideMaster1.xml"/>
 </Relationships>`;
 
 const slideMasterXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<p:sldMaster xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
-<p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:spTree></p:cSld></p:sldMaster>`;
+<p:sldMaster xmlns:a="${A_NS}" xmlns:r="${R_NS}" xmlns:p="${P_NS}">
+<p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:spTree></p:cSld>
+<p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/>
+<p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst></p:sldMaster>`;
 
-function slideMasterRels(slideCount: number) {
-  const rels = Array.from(
-    { length: slideCount },
-    (_, i) =>
-      `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout${i + 1}.xml"/>`,
-  ).join("");
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rels}</Relationships>`;
-}
+const slideMasterRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="${REL_NS}">
+<Relationship Id="rId1" Type="${R_NS}/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>
+<Relationship Id="rId2" Type="${R_NS}/theme" Target="../theme/theme1.xml"/>
+</Relationships>`;
+
+// A slide master requires a theme with a full colour/font/format scheme.
+const themeXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<a:theme xmlns:a="${A_NS}" name="Office Theme">
+<a:themeElements>
+<a:clrScheme name="Office">
+<a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1>
+<a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1>
+<a:dk2><a:srgbClr val="44546A"/></a:dk2>
+<a:lt2><a:srgbClr val="E7E6E6"/></a:lt2>
+<a:accent1><a:srgbClr val="4472C4"/></a:accent1>
+<a:accent2><a:srgbClr val="ED7D31"/></a:accent2>
+<a:accent3><a:srgbClr val="A5A5A5"/></a:accent3>
+<a:accent4><a:srgbClr val="FFC000"/></a:accent4>
+<a:accent5><a:srgbClr val="5B9BD5"/></a:accent5>
+<a:accent6><a:srgbClr val="70AD47"/></a:accent6>
+<a:hlink><a:srgbClr val="0563C1"/></a:hlink>
+<a:folHlink><a:srgbClr val="954F72"/></a:folHlink>
+</a:clrScheme>
+<a:fontScheme name="Office">
+<a:majorFont><a:latin typeface="Calibri Light"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont>
+<a:minorFont><a:latin typeface="Calibri"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont>
+</a:fontScheme>
+<a:fmtScheme name="Office">
+<a:fillStyleLst>
+<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>
+<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>
+<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>
+</a:fillStyleLst>
+<a:lnStyleLst>
+<a:ln w="6350"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln>
+<a:ln w="12700"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln>
+<a:ln w="19050"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln>
+</a:lnStyleLst>
+<a:effectStyleLst>
+<a:effectStyle><a:effectLst/></a:effectStyle>
+<a:effectStyle><a:effectLst/></a:effectStyle>
+<a:effectStyle><a:effectLst/></a:effectStyle>
+</a:effectStyleLst>
+<a:bgFillStyleLst>
+<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>
+<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>
+<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>
+</a:bgFillStyleLst>
+</a:fmtScheme>
+</a:themeElements>
+</a:theme>`;

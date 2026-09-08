@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -32,7 +32,38 @@ const GoogleIcon = (props: React.ComponentProps<"svg">) => (
     <path d="M1 1h22v22H1z" fill="none" />
   </svg>
 );
-import { createClient } from "@/utils/supabase/client";
+import { auth } from "@/utils/firebase/client";
+import {
+  GoogleAuthProvider,
+  createUserWithEmailAndPassword,
+  sendEmailVerification,
+  signInWithEmailAndPassword,
+  signInWithPopup,
+} from "firebase/auth";
+
+/** Map Firebase auth error codes to friendly messages. */
+function authErrorMessage(err: unknown, fallback: string): string {
+  const code = (err as { code?: string })?.code;
+  switch (code) {
+    case "auth/email-already-in-use":
+      return "An account with this email already exists.";
+    case "auth/invalid-email":
+      return "That email address doesn't look valid.";
+    case "auth/weak-password":
+      return "Password should be at least 6 characters.";
+    case "auth/invalid-credential":
+    case "auth/wrong-password":
+    case "auth/user-not-found":
+      return "Incorrect email or password.";
+    case "auth/too-many-requests":
+      return "Too many attempts. Please try again later.";
+    case "auth/popup-closed-by-user":
+    case "auth/cancelled-popup-request":
+      return "Sign-in was cancelled.";
+    default:
+      return (err as { message?: string })?.message || fallback;
+  }
+}
 
 export function AuthModal() {
   const { isAuthModalOpen, setAuthModalOpen } = useAuth();
@@ -43,8 +74,6 @@ export function AuthModal() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const supabase = useMemo(() => createClient(), []);
-
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
@@ -53,24 +82,14 @@ export function AuthModal() {
 
     try {
       if (isSignUp) {
-        const { error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            emailRedirectTo: `${window.location.origin}/`,
-          },
-        });
-        if (error) throw error;
+        const { user } = await createUserWithEmailAndPassword(auth, email, password);
+        await sendEmailVerification(user, { url: `${window.location.origin}/` });
         setSuccess("Please check your email for a verification link to complete your registration.");
       } else {
-        const { error } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        });
-        if (error) throw error;
+        await signInWithEmailAndPassword(auth, email, password);
       }
-    } catch (err: any) {
-      setError(err.message || "An error occurred during authentication.");
+    } catch (err: unknown) {
+      setError(authErrorMessage(err, "An error occurred during authentication."));
     } finally {
       setLoading(false);
     }
@@ -81,16 +100,11 @@ export function AuthModal() {
       setLoading(true);
       setError(null);
       setSuccess(null);
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: {
-          redirectTo: `${window.location.origin}/`,
-        },
-      });
-      if (error) throw error;
-      // Note: we don't setLoading(false) here on success because the page will redirect to Google
-    } catch (err: any) {
-      setError(err.message || "An error occurred with Google Sign-In.");
+      await signInWithPopup(auth, new GoogleAuthProvider());
+      // On success the auth state listener closes the modal.
+    } catch (err: unknown) {
+      setError(authErrorMessage(err, "An error occurred with Google Sign-In."));
+    } finally {
       setLoading(false);
     }
   };

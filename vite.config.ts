@@ -11,5 +11,19 @@ export default defineConfig({
     // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).
     // nitro/vite builds from this
     server: { entry: "server" },
+    // Prerender every route to static HTML at build time. The app has no runtime
+    // server needs (loaders/head read static data only), so this produces a fully
+    // static site for Firebase Hosting (Spark/free) — no Cloud Functions.
+    // Driven by TanStack Start (not nitro's crawler) so the route manifest is known.
+    prerender: {
+      enabled: true,
+      crawlLinks: true,
+      autoStaticPathsDiscovery: true,
+      failOnError: false,
+    },
   },
+  // Disable the Lovable Cloudflare/nitro pipeline so TanStack Start uses its native
+  // build (dist/server + dist/client), which is what the prerenderer expects. The
+  // prerendered HTML lands in dist/client for static Firebase Hosting.
+  nitro: false,
 });

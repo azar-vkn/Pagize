@@ -165,7 +165,7 @@ export const tools: Tool[] = [
   {
     slug: "html-to-pdf",
     name: "HTML to PDF",
-    blurb: "A URL or file rendered to PDF.",
+    blurb: "An HTML file rendered to PDF.",
     icon: Globe,
     category: "convert-to",
     accepts: ".html",

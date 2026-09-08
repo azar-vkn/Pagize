@@ -91,9 +91,12 @@ export function PdfPreview({
   }
 
   if (thumbnails.length === 0) {
+    // Expected for the unlock and repair tools, whose inputs are by definition
+    // password-protected or damaged. Say why rather than just failing.
     return (
       <p className="py-8 text-center text-sm text-muted-foreground">
-        Could not render preview for this file.
+        No preview available — this file may be password-protected or damaged.
+        You can still run the tool on it.
       </p>
     );
   }

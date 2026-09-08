@@ -7,8 +7,8 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { createClient } from "@/utils/supabase/client";
-import type { Session } from "@supabase/supabase-js";
+import { auth } from "@/utils/firebase/client";
+import { onAuthStateChanged, signOut, type User } from "firebase/auth";
 import {
   ACTIVITY_WRITE_THROTTLE_MS,
   INACTIVITY_CHECK_INTERVAL_MS,
@@ -19,7 +19,8 @@ import {
 } from "@/lib/session-activity";
 
 interface AuthContextType {
-  session: Session | null;
+  /** The signed-in Firebase user, or null when signed out. */
+  session: User | null;
   /** True until the stored session has been read. Not the same as signed out. */
   loading: boolean;
   isAuthModalOpen: boolean;
@@ -31,10 +32,9 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [session, setSession] = useState<Session | null>(null);
+  const [session, setSession] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [isAuthModalOpen, setAuthModalOpen] = useState(false);
-  const supabase = useMemo(() => createClient(), []);
   const lastWriteRef = useRef(0);
 
   const markActive = useCallback((force = false) => {
@@ -46,56 +46,57 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(async () => {
     clearLastActive();
-    await supabase.auth.signOut();
-  }, [supabase]);
+    await signOut(auth);
+  }, []);
 
   // Restore the stored session, dropping it if the user has been away too long.
+  // Firebase's onAuthStateChanged fires once on init with the restored user (or
+  // null) and again on every subsequent sign-in/sign-out, so a single listener
+  // covers both restore and live updates.
   useEffect(() => {
     let active = true;
+    let seenFirst = false;
 
-    supabase.auth.getSession().then(async ({ data: { session: stored } }) => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (!active) return;
 
-      if (stored) {
+      // On the first emission with a restored user, enforce the inactivity
+      // deadline before treating them as signed in.
+      if (user && !seenFirst) {
         const lastActive = readLastActive();
         // A missing timestamp means we have never recorded activity for this
         // session (e.g. it predates this feature), so treat it as active now
         // rather than signing a valid user out.
         if (isSessionExpiredByInactivity(lastActive)) {
+          seenFirst = true;
           clearLastActive();
-          await supabase.auth.signOut();
-          if (active) {
-            setSession(null);
-            setLoading(false);
-          }
+          await signOut(auth);
+          // signOut triggers another onAuthStateChanged(null) which clears state.
           return;
         }
         markActive(true);
       }
 
-      setSession(stored);
-      setLoading(false);
-    });
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((event, next) => {
-      setSession(next);
+      seenFirst = true;
+      setSession(user);
       setLoading(false);
 
-      if (next) {
+      if (user) {
         setAuthModalOpen(false); // Close modal on successful login
-        if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") markActive(true);
-      } else if (event === "SIGNED_OUT") {
+        // onAuthStateChanged only fires on sign-in/out (not token refresh), so
+        // any emission carrying a user means fresh activity worth recording.
+        markActive(true);
+      } else {
         clearLastActive();
       }
     });
 
     return () => {
       active = false;
-      subscription.unsubscribe();
+      unsubscribe();
     };
-  }, [supabase, markActive]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [markActive]);
 
   // While signed in, record activity and enforce the deadline in long-lived tabs.
   useEffect(() => {
@@ -147,13 +148,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  return (
-    <AuthContext.Provider
-      value={{ session, loading, isAuthModalOpen, setAuthModalOpen, checkUsageLimit, logout }}
-    >
-      {children}
-    </AuthContext.Provider>
+  const value = useMemo(
+    () => ({
+      session,
+      loading,
+      isAuthModalOpen,
+      setAuthModalOpen,
+      checkUsageLimit,
+      logout,
+    }),
+    // checkUsageLimit closes over loading/session; recreate when those change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [session, loading, isAuthModalOpen, logout],
   );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

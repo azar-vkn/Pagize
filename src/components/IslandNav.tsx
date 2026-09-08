@@ -61,9 +61,9 @@ export function IslandNav() {
               <>
                 <span
                   className="max-w-[12rem] truncate px-2 text-sm font-medium text-foreground"
-                  title={session.user.email ?? undefined}
+                  title={session.email ?? undefined}
                 >
-                  {session.user.email ?? "Signed in"}
+                  {session.email ?? "Signed in"}
                 </span>
                 <button
                   onClick={logout}

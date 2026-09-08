@@ -1,12 +1,12 @@
 /**
  * Inactivity policy for signed-in sessions.
  *
- * Supabase keeps its auth cookies for 400 days and refreshes the access token
- * on its own, so signing in once is enough to stay signed in. This module adds
- * the one rule on top of that: a session that has gone untouched for a week is
- * dropped the next time the app runs.
+ * Firebase persists the auth session locally and refreshes the ID token on its
+ * own, so signing in once is enough to stay signed in. This module adds the one
+ * rule on top of that: a session that has gone untouched for a week is dropped
+ * the next time the app runs.
  *
- * Kept free of React and Supabase imports so the rule can be tested directly.
+ * Kept free of React and Firebase imports so the rule can be tested directly.
  */
 
 /** Sign a user out once they have been away this long. */
