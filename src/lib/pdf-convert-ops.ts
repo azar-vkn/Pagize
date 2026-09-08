@@ -22,8 +22,12 @@ export async function wordToPdf(file: File): Promise<OutputFile[]> {
   // VML <v:imagedata r:id> references can be resolved to files in word/media.
   const relsXml = (await zip.file("word/_rels/document.xml.rels")?.async("string")) ?? "";
   const relTargets = new Map<string, string>();
-  for (const m of relsXml.matchAll(/<Relationship\b[^>]*?\bId="([^"]+)"[^>]*?\bTarget="([^"]+)"/g)) {
-    relTargets.set(m[1]!, m[2]!);
+  // Attribute order inside <Relationship> is not fixed, so pull Id and Target
+  // out of each tag independently rather than assuming Id comes first.
+  for (const tag of relsXml.matchAll(/<Relationship\b[^>]*?\/?>/g)) {
+    const id = /\bId="([^"]+)"/.exec(tag[0])?.[1];
+    const target = /\bTarget="([^"]+)"/.exec(tag[0])?.[1];
+    if (id && target) relTargets.set(id, target);
   }
 
   const imageCache = new Map<string, PdfBlock["image"] | null>();
