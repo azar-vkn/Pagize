@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Search, ShieldCheck, Zap, Sparkles } from "lucide-react";
+import { Search, Sparkles } from "lucide-react";
 import { useMemo, useState } from "react";
 import { IslandNav } from "@/components/IslandNav";
 import { SiteFooter } from "@/components/SiteFooter";
@@ -92,31 +92,7 @@ function Index() {
           </div>
         </section>
 
-        <section className="mt-6 grid gap-4 sm:grid-cols-3">
-          {[
-            {
-              icon: Zap,
-              title: "Instant",
-              body: "No queues or uploads — processing starts on drop.",
-            },
-            {
-              icon: ShieldCheck,
-              title: "Private",
-              body: "Files are handled locally and never stored.",
-            },
-            { icon: Sparkles, title: "Free tier", body: "Core tools free; batch and API on Pro." },
-          ].map((f) => (
-            <div key={f.title} className="island flex items-start gap-3 px-5 py-4">
-              <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-accent text-accent-foreground">
-                <f.icon className="size-4" />
-              </span>
-              <div className="min-w-0">
-                <p className="text-sm font-semibold">{f.title}</p>
-                <p className="text-sm text-muted-foreground">{f.body}</p>
-              </div>
-            </div>
-          ))}
-        </section>
+
 
         {categories.map((cat) => {
           const catTools = filtered.filter((t) => t.category === cat.id);

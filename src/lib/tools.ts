@@ -354,7 +354,7 @@ const navShort: Record<string, string> = {
   "merge-pdf": "Merge",
   "split-pdf": "Split",
   "compress-pdf": "Compress",
-  "jpg-to-pdf": "Images",
+  "edit-pdf": "Edit",
   "watermark-pdf": "Watermark",
 };
 
