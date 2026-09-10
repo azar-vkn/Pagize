@@ -56,25 +56,56 @@ export async function wordToPdf(file: File): Promise<OutputFile[]> {
   };
 
   const blocks: PdfBlock[] = [];
-  // Walk paragraphs in document order, emitting text then any images they hold.
-  // Only the top-level <a:blip> is matched: an SVG picture also carries an
-  // <asvg:svgBlip>, but its <a:blip> is the raster fallback we can embed, so
-  // matching both would emit the same image twice.
-  for (const pm of docXml.matchAll(/<w:p\b[\s\S]*?<\/w:p>/g)) {
-    const pXml = pm[0];
-    const text = extractParagraphText(pXml);
+  // Walk the body in order. A <w:tbl> is consumed as a whole unit (its inner
+  // <w:p> are cell content, not loose paragraphs); any other <w:p> is a normal
+  // paragraph, which may also carry images. Only the top-level <a:blip> is
+  // matched: an SVG picture also carries an <asvg:svgBlip>, but its <a:blip> is
+  // the raster fallback we embed, so matching both would emit the image twice.
+  for (const m of docXml.matchAll(/<w:tbl\b[\s\S]*?<\/w:tbl>|<w:p\b[\s\S]*?<\/w:p>/g)) {
+    const chunk = m[0];
+    if (chunk.startsWith("<w:tbl")) {
+      const table = parseDocxTable(chunk);
+      if (table.rows.length) blocks.push({ text: "", table });
+      continue;
+    }
+    const text = extractParagraphText(chunk);
     if (text.trim()) blocks.push({ text });
-    for (const bm of pXml.matchAll(/<a:blip\b[^>]*?r:embed="([^"]+)"/g)) {
+    for (const bm of chunk.matchAll(/<a:blip\b[^>]*?r:embed="([^"]+)"/g)) {
       const img = await loadImage(bm[1]!);
       if (img) blocks.push({ text: "", image: img });
     }
-    for (const vm of pXml.matchAll(/<v:imagedata\b[^>]*?r:id="([^"]+)"/g)) {
+    for (const vm of chunk.matchAll(/<v:imagedata\b[^>]*?r:id="([^"]+)"/g)) {
       const img = await loadImage(vm[1]!);
       if (img) blocks.push({ text: "", image: img });
     }
   }
 
   return renderBlocksToPdf(blocks, `${baseName(file)}.pdf`);
+}
+
+/** Parse a <w:tbl> into rows of cell text, with column widths (twips) if present. */
+function parseDocxTable(tblXml: string): { rows: string[][]; colWidths?: number[] } {
+  const rows: string[][] = [];
+  for (const tr of tblXml.matchAll(/<w:tr\b[\s\S]*?<\/w:tr>/g)) {
+    const cells: string[] = [];
+    for (const tc of tr[0].matchAll(/<w:tc\b[\s\S]*?<\/w:tc>/g)) {
+      const paras: string[] = [];
+      for (const p of tc[0].matchAll(/<w:p\b[\s\S]*?<\/w:p>/g)) {
+        paras.push(extractParagraphText(p[0]));
+      }
+      cells.push(
+        paras
+          .join("\n")
+          .replace(/\n{3,}/g, "\n\n")
+          .trim(),
+      );
+    }
+    if (cells.length) rows.push(cells);
+  }
+  const colWidths = [...tblXml.matchAll(/<w:gridCol\b[^>]*\bw:w="(\d+)"/g)].map((c) =>
+    Number(c[1]),
+  );
+  return colWidths.length ? { rows, colWidths } : { rows };
 }
 
 const IMAGE_MIME: Record<string, string> = {
@@ -848,6 +879,8 @@ type PdfBlock = {
   spaceBefore?: number;
   /** When set, the block renders an embedded image instead of text. */
   image?: { bytes: Uint8Array; kind: "png" | "jpg" };
+  /** When set, the block renders a bordered table. colWidths are relative (twips). */
+  table?: { rows: string[][]; colWidths?: number[] };
 };
 
 async function renderBlocksToPdf(blocks: PdfBlock[], filename: string): Promise<OutputFile[]> {
@@ -893,6 +926,69 @@ async function renderBlocksToPdf(blocks: PdfBlock[], filename: string): Promise<
       y -= drawH;
       page.drawImage(embedded, { x: margin, y, width: drawW, height: drawH });
       y -= lineHeight * 0.5; // spacing after image
+      continue;
+    }
+
+    // Table block: draw a bordered grid with wrapped, multi-line cells.
+    if (block.table) {
+      const tableWidth = pageWidth - margin * 2;
+      const nCols = Math.max(1, ...block.table.rows.map((r) => r.length));
+      const cw = block.table.colWidths;
+      let widths: number[];
+      if (cw && cw.length === nCols && cw.some((w) => w > 0)) {
+        const total = cw.reduce((a, b) => a + b, 0) || 1;
+        widths = cw.map((w) => (w / total) * tableWidth);
+      } else {
+        widths = Array(nCols).fill(tableWidth / nCols);
+      }
+      const tSize = 9;
+      const tLine = tSize * 1.3;
+      const pad = 4;
+      for (const [rowIdx, row] of block.table.rows.entries()) {
+        const isHeader = rowIdx === 0;
+        const cellFont = isHeader ? boldFont : font;
+        // Wrap every cell first so the row can be sized to its tallest cell.
+        const wrapped = Array.from({ length: nCols }, (_, c) => {
+          const inner = widths[c]! - pad * 2;
+          return sanitizeForStandardFont(row[c] ?? "")
+            .split("\n")
+            .flatMap((seg) => (seg.trim() ? wrapText(seg, cellFont, tSize, inner) : [""]));
+        });
+        const rowH = Math.max(tLine, ...wrapped.map((l) => l.length * tLine)) + pad * 2;
+        if (y - rowH < margin) {
+          page = doc.addPage([pageWidth, pageHeight]);
+          y = pageHeight - margin;
+        }
+        let x = margin;
+        for (let c = 0; c < nCols; c++) {
+          const w = widths[c]!;
+          page.drawRectangle({
+            x,
+            y: y - rowH,
+            width: w,
+            height: rowH,
+            borderColor: rgb(0.7, 0.7, 0.7),
+            borderWidth: 0.75,
+            color: isHeader ? rgb(0.95, 0.95, 0.95) : rgb(1, 1, 1),
+          });
+          let ty = y - pad - tSize;
+          for (const ln of wrapped[c]!) {
+            if (ln) {
+              page.drawText(ln, {
+                x: x + pad,
+                y: ty,
+                size: tSize,
+                font: cellFont,
+                color: rgb(0.1, 0.1, 0.1),
+              });
+            }
+            ty -= tLine;
+          }
+          x += w;
+        }
+        y -= rowH;
+      }
+      y -= tLine * 0.5; // spacing after table
       continue;
     }
 
