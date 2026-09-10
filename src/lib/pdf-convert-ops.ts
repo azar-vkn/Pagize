@@ -6,7 +6,13 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import JSZip from "jszip";
 import type { OutputFile } from "./pdf-ops";
-import { renderPageToBlob, getPageCount, extractAllText, extractAllTextStructured } from "./pdf-renderer";
+import {
+  renderPageToBlob,
+  getPageCount,
+  getPageDimensions,
+  extractAllText,
+  extractAllTextStructured,
+} from "./pdf-renderer";
 
 const baseName = (file: File) => file.name.replace(/\.[^.]+$/, "");
 
@@ -202,15 +208,17 @@ export async function powerpointToPdf(file: File): Promise<OutputFile[]> {
 /** Parse XLSX and render cell data as a table in a PDF. */
 /** Reverses the XML escaping used throughout the XLSX parts. */
 function decodeXmlEntities(text: string): string {
-  return text
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_, d: string) => String.fromCodePoint(Number(d)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, h: string) => String.fromCodePoint(parseInt(h, 16)))
-    // Last, so an escaped entity like &amp;lt; does not decode twice.
-    .replace(/&amp;/g, "&");
+  return (
+    text
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&#(\d+);/g, (_, d: string) => String.fromCodePoint(Number(d)))
+      .replace(/&#x([0-9a-fA-F]+);/g, (_, h: string) => String.fromCodePoint(parseInt(h, 16)))
+      // Last, so an escaped entity like &amp;lt; does not decode twice.
+      .replace(/&amp;/g, "&")
+  );
 }
 
 /**
@@ -257,12 +265,11 @@ export async function excelToPdf(file: File): Promise<OutputFile[]> {
   const sharedStrings = parseSharedStrings(sharedStringsXml);
 
   // The first sheet is not always literally sheet1.xml.
-  const sheetPath =
-    zip.file("xl/worksheets/sheet1.xml")
-      ? "xl/worksheets/sheet1.xml"
-      : Object.keys(zip.files)
-          .filter((n) => /^xl\/worksheets\/[^/]+\.xml$/.test(n))
-          .sort()[0];
+  const sheetPath = zip.file("xl/worksheets/sheet1.xml")
+    ? "xl/worksheets/sheet1.xml"
+    : Object.keys(zip.files)
+        .filter((n) => /^xl\/worksheets\/[^/]+\.xml$/.test(n))
+        .sort()[0];
   const sheetXml = sheetPath ? await zip.file(sheetPath)?.async("string") : undefined;
   if (!sheetXml) throw new Error("Could not read XLSX data. Make sure it's a valid .xlsx file.");
 
@@ -341,7 +348,9 @@ export async function excelToPdf(file: File): Promise<OutputFile[]> {
         color: rowIdx === 0 ? rgb(0.95, 0.95, 0.95) : rgb(1, 1, 1),
       });
 
-      const cellText = sanitizeForStandardFont(row[col] ?? "").replace(/\s+/g, " ").trim();
+      const cellText = sanitizeForStandardFont(row[col] ?? "")
+        .replace(/\s+/g, " ")
+        .trim();
       if (!cellText) continue;
       page.drawText(fitText(cellText, cellFont, fontSize, colWidth - cellPadding * 2), {
         x: x + cellPadding,
@@ -361,18 +370,53 @@ export async function excelToPdf(file: File): Promise<OutputFile[]> {
 /** Parse an HTML file and render its text content to PDF. */
 /** Elements whose text is markup or machinery, never page content. */
 const NON_CONTENT_TAGS = new Set([
-  "SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "SVG", "IFRAME", "OBJECT", "CANVAS", "HEAD",
+  "SCRIPT",
+  "STYLE",
+  "NOSCRIPT",
+  "TEMPLATE",
+  "SVG",
+  "IFRAME",
+  "OBJECT",
+  "CANVAS",
+  "HEAD",
 ]);
 
 /** Elements that start a new paragraph in the output. */
 const BLOCK_TAGS = new Set([
-  "P", "DIV", "H1", "H2", "H3", "H4", "H5", "H6", "LI", "BLOCKQUOTE", "PRE",
-  "TD", "TH", "DT", "DD", "FIGCAPTION", "ADDRESS", "SECTION", "ARTICLE",
-  "HEADER", "FOOTER", "MAIN", "ASIDE", "NAV", "SUMMARY",
+  "P",
+  "DIV",
+  "H1",
+  "H2",
+  "H3",
+  "H4",
+  "H5",
+  "H6",
+  "LI",
+  "BLOCKQUOTE",
+  "PRE",
+  "TD",
+  "TH",
+  "DT",
+  "DD",
+  "FIGCAPTION",
+  "ADDRESS",
+  "SECTION",
+  "ARTICLE",
+  "HEADER",
+  "FOOTER",
+  "MAIN",
+  "ASIDE",
+  "NAV",
+  "SUMMARY",
 ]);
 
 const HEADING_SIZES: Record<string, number> = {
-  H1: 22, H2: 18, H3: 15, H4: 13, H5: 12, H6: 12,
+  H1: 22,
+  H2: 18,
+  H3: 15,
+  H4: 13,
+  H5: 12,
+  H6: 12,
 };
 
 function hasBlockDescendant(el: Element): boolean {
@@ -422,7 +466,9 @@ export async function htmlToPdf(file: File): Promise<OutputFile[]> {
     // A body with no block elements at all (bare text, or a wrapper we do not
     // treat as a block) still has readable content worth rendering.
     if (blocks.length === 0) {
-      for (const el of Array.from(htmlDoc.body.querySelectorAll("script, style, noscript, template"))) {
+      for (const el of Array.from(
+        htmlDoc.body.querySelectorAll("script, style, noscript, template"),
+      )) {
         el.remove();
       }
       const text = normalizeWhitespace(htmlDoc.body.textContent ?? "");
@@ -475,15 +521,23 @@ export async function pdfToWord(file: File): Promise<OutputFile[]> {
   let bodyFontFamily = "Arial";
   let maxCount = 0;
   for (const [size, count] of fontSizeCounts) {
-    if (count > maxCount) { maxCount = count; bodyFontSize = size; }
+    if (count > maxCount) {
+      maxCount = count;
+      bodyFontSize = size;
+    }
   }
   maxCount = 0;
   for (const [family, count] of fontFamilyCounts) {
-    if (count > maxCount) { maxCount = count; bodyFontFamily = family; }
+    if (count > maxCount) {
+      maxCount = count;
+      bodyFontFamily = family;
+    }
   }
 
   // Build DOCX XML paragraphs
   const allParagraphs: string[] = [];
+  // Images embedded for pages that have no extractable text (scanned/image PDFs).
+  const media: { relId: string; name: string; bytes: Uint8Array }[] = [];
 
   for (let pageIdx = 0; pageIdx < pages.length; pageIdx++) {
     const pageLines = pages[pageIdx] ?? [];
@@ -495,6 +549,28 @@ export async function pdfToWord(file: File): Promise<OutputFile[]> {
       );
     }
 
+    // A page with no selectable text is likely scanned/image-only. Extracting
+    // text yields nothing, so render the whole page and embed it as an image
+    // instead of emitting an empty page.
+    const pageHasText = pageLines.some((line) => line.runs.some((r) => r.text.trim()));
+    if (!pageHasText) {
+      try {
+        const dims = await getPageDimensions(file, pageIdx);
+        const blob = await renderPageToBlob(file, pageIdx, 2, 0.85);
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        const relId = `rId${media.length + 2}`; // rId1 is styles.xml
+        const name = `image${media.length + 1}.jpeg`;
+        media.push({ relId, name, bytes });
+        const fit = Math.min(DOCX_USABLE_W_PT / dims.width, DOCX_USABLE_H_PT / dims.height, 1);
+        const cx = Math.round(dims.width * fit * EMU_PER_PT);
+        const cy = Math.round(dims.height * fit * EMU_PER_PT);
+        allParagraphs.push(docxImageParagraph(relId, cx, cy, `Page ${pageIdx + 1}`));
+      } catch {
+        allParagraphs.push(`<w:p/>`); // rendering failed — keep the doc valid
+      }
+      continue;
+    }
+
     for (const line of pageLines) {
       // Empty lines (no runs) become empty paragraphs for spacing
       if (line.runs.length === 0) {
@@ -504,8 +580,7 @@ export async function pdfToWord(file: File): Promise<OutputFile[]> {
 
       // Check if any run on this line is a heading candidate
       const firstRun = line.runs[0];
-      const avgFontSize =
-        line.runs.reduce((sum, r) => sum + r.fontSize, 0) / line.runs.length;
+      const avgFontSize = line.runs.reduce((sum, r) => sum + r.fontSize, 0) / line.runs.length;
       const isLargeFont = avgFontSize > bodyFontSize * 1.25;
       const allBold = line.runs.every((r) => r.isBold);
       const isHeading = isLargeFont && allBold;
@@ -535,15 +610,16 @@ export async function pdfToWord(file: File): Promise<OutputFile[]> {
         })
         .join("");
 
-      allParagraphs.push(
-        `<w:p><w:pPr>${pStyle}${pSpacing}</w:pPr>${runsXml}</w:p>`,
-      );
+      allParagraphs.push(`<w:p><w:pPr>${pStyle}${pSpacing}</w:pPr>${runsXml}</w:p>`);
     }
   }
 
   const docXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+            xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+            xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+            xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
 <w:body>${allParagraphs.join("")}
 <w:sectPr>
   <w:pgSz w:w="12240" w:h="15840"/>
@@ -583,18 +659,64 @@ export async function pdfToWord(file: File): Promise<OutputFile[]> {
   </w:style>
 </w:styles>`;
 
+  // Content types and relationships gain a jpeg default + one image relationship
+  // per embedded page when the document contains scanned/image-only pages.
+  const jpegDefault = media.length ? `<Default Extension="jpeg" ContentType="image/jpeg"/>\n` : "";
+  const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+${jpegDefault}<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>`;
+  const imageRels = media
+    .map(
+      (m) =>
+        `<Relationship Id="${m.relId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${m.name}"/>`,
+    )
+    .join("");
+  const wordRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+${imageRels}</Relationships>`;
+
   const zip = new JSZip();
-  zip.file("[Content_Types].xml", contentTypesDocxWithStyles);
+  zip.file("[Content_Types].xml", contentTypes);
   zip.file("_rels/.rels", relsDocx);
-  zip.file("word/_rels/document.xml.rels", wordRelsWithStyles);
+  zip.file("word/_rels/document.xml.rels", wordRels);
   zip.file("word/document.xml", docXml);
   zip.file("word/styles.xml", stylesXml);
+  for (const m of media) zip.file(`word/media/${m.name}`, m.bytes);
 
   const blob = await zip.generateAsync({
     type: "blob",
     mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   });
   return [{ name: `${baseName(file)}.docx`, blob }];
+}
+
+// DOCX page geometry: letter minus 1" margins, and EMUs per point (914400/72).
+const EMU_PER_PT = 12700;
+const DOCX_USABLE_W_PT = 468;
+const DOCX_USABLE_H_PT = 648;
+
+/** An inline-image paragraph (DrawingML) for an embedded page raster. */
+function docxImageParagraph(relId: string, cxEmu: number, cyEmu: number, name: string): string {
+  const safe = escapeXml(name);
+  return (
+    `<w:p><w:r><w:drawing>` +
+    `<wp:inline distT="0" distB="0" distL="0" distR="0">` +
+    `<wp:extent cx="${cxEmu}" cy="${cyEmu}"/>` +
+    `<wp:docPr id="1" name="${safe}"/>` +
+    `<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>` +
+    `<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">` +
+    `<pic:pic><pic:nvPicPr><pic:cNvPr id="0" name="${safe}"/><pic:cNvPicPr/></pic:nvPicPr>` +
+    `<pic:blipFill><a:blip r:embed="${relId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>` +
+    `<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cxEmu}" cy="${cyEmu}"/></a:xfrm>` +
+    `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>` +
+    `</pic:pic></a:graphicData></a:graphic>` +
+    `</wp:inline></w:drawing></w:r></w:p>`
+  );
 }
 
 /** Extract text from PDF and create a simple PPTX file. */
@@ -678,13 +800,15 @@ function escapeXml(s: string): string {
  * drop the rest rather than failing the whole conversion.
  */
 function sanitizeForStandardFont(input: string): string {
-  return (input ?? "")
-    .replace(/\r\n?/g, "\n")
-    // WinAnsi does have en and em dash, so keep those; fold only the ones it lacks.
-    .replace(/[‐‑‒―]/g, "-")
-    .replace(/ /g, " ")
-    .replace(/\t/g, "    ")
-    .replace(/[^\n\x20-\x7E\xA0-\xFF‘’“”–—…•™]/g, "");
+  return (
+    (input ?? "")
+      .replace(/\r\n?/g, "\n")
+      // WinAnsi does have en and em dash, so keep those; fold only the ones it lacks.
+      .replace(/[‐‑‒―]/g, "-")
+      .replace(/ /g, " ")
+      .replace(/\t/g, "    ")
+      .replace(/[^\n\x20-\x7E\xA0-\xFF‘’“”–—…•™]/g, "")
+  );
 }
 
 /** Collapses HTML's insignificant whitespace into single spaces. */
@@ -814,14 +938,6 @@ const contentTypesDocx = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?
 <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
 </Types>`;
 
-const contentTypesDocxWithStyles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
-<Default Extension="xml" ContentType="application/xml"/>
-<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
-<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
-</Types>`;
-
 const relsDocx = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
@@ -829,11 +945,6 @@ const relsDocx = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 
 const wordRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>`;
-
-const wordRelsWithStyles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
-</Relationships>`;
 
 const contentTypesXlsx = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
