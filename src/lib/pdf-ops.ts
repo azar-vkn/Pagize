@@ -199,7 +199,7 @@ export async function cropPdf(
 ): Promise<OutputFile[]> {
   const doc = await load(file);
   const total = doc.getPageCount();
-  
+
   for (let i = 0; i < total; i++) {
     const margins = pageCrops[i];
     if (!margins) continue;
@@ -317,11 +317,11 @@ export async function ocrPdf(file: File): Promise<OutputFile[]> {
   return [await save(doc, `${baseName(file)}-ocr.pdf`)];
 }
 
-/** Embed a signature image onto a specific page at given coordinates. */
+/** Embed a signature image onto one or more pages at the given coordinates. */
 export async function signPdf(
   file: File,
   signatureDataUrl: string,
-  pageIndex: number,
+  pageIndices: number[],
   x: number,
   y: number,
   sigWidth: number,
@@ -334,14 +334,20 @@ export async function signPdf(
   const isPng = signatureDataUrl.includes("image/png");
   const sigImage = isPng ? await doc.embedPng(sigBytes) : await doc.embedJpg(sigBytes);
 
-  const page = doc.getPage(pageIndex);
-  const { height } = page.getSize();
-  page.drawImage(sigImage, {
-    x,
-    y: height - y - sigHeight,
-    width: sigWidth,
-    height: sigHeight,
-  });
+  const pageCount = doc.getPageCount();
+  // De-duplicate and keep only valid page indices.
+  for (const idx of [...new Set(pageIndices)]) {
+    if (idx < 0 || idx >= pageCount) continue;
+    const page = doc.getPage(idx);
+    const { height } = page.getSize();
+    page.drawImage(sigImage, {
+      x,
+      // PDF origin is bottom-left; convert from the top-left coordinates used by the UI.
+      y: height - y - sigHeight,
+      width: sigWidth,
+      height: sigHeight,
+    });
+  }
   return [await save(doc, `${baseName(file)}-signed.pdf`)];
 }
 

@@ -172,6 +172,8 @@ type Options = {
   signY: number;
   signWidth: number;
   signHeight: number;
+  signPagesMode: "current" | "all" | "range";
+  signRanges: string;
   // Edit
   editText: string;
   editPage: number;
@@ -210,6 +212,8 @@ const defaults: Options = {
   signY: 700,
   signWidth: 150,
   signHeight: 50,
+  signPagesMode: "current",
+  signRanges: "",
   editText: "",
   editPage: 0,
   editX: 50,
@@ -371,33 +375,45 @@ function ToolPage() {
     }
   };
 
-  // Signature drawing handlers
-  const startDraw = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  // Signature drawing handlers. Pointer coordinates are in CSS pixels, so they
+  // must be scaled to the canvas's internal buffer or strokes drift and lag.
+  const sigPoint = (e: React.PointerEvent<HTMLCanvasElement>, canvas: HTMLCanvasElement) => {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) * (canvas.width / rect.width),
+      y: (e.clientY - rect.top) * (canvas.height / rect.height),
+    };
+  };
+
+  const startDraw = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = sigCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
     setIsDrawing(true);
-    const rect = canvas.getBoundingClientRect();
+    const { x, y } = sigPoint(e, canvas);
     ctx.beginPath();
-    ctx.moveTo(e.clientX - rect.left, e.clientY - rect.top);
+    ctx.moveTo(x, y);
   };
 
-  const draw = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const draw = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!isDrawing) return;
     const canvas = sigCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    const rect = canvas.getBoundingClientRect();
-    ctx.lineWidth = 2;
+    const { x, y } = sigPoint(e, canvas);
+    ctx.lineWidth = 3.5;
     ctx.lineCap = "round";
+    ctx.lineJoin = "round";
     ctx.strokeStyle = "#000";
-    ctx.lineTo(e.clientX - rect.left, e.clientY - rect.top);
+    ctx.lineTo(x, y);
     ctx.stroke();
   };
 
   const endDraw = () => {
+    if (!isDrawing) return;
     setIsDrawing(false);
     const canvas = sigCanvasRef.current;
     if (canvas) {
@@ -639,18 +655,29 @@ function ToolPage() {
         case "unlock-pdf":
           out = await unlockPdf(file);
           break;
-        case "sign-pdf":
+        case "sign-pdf": {
           if (!opts.signatureDataUrl) throw new Error("Draw or upload a signature first.");
+          const total = pages ?? 1;
+          let signPages: number[];
+          if (opts.signPagesMode === "all") {
+            signPages = Array.from({ length: total }, (_, i) => i);
+          } else if (opts.signPagesMode === "range") {
+            signPages = parsePageRanges(opts.signRanges, total);
+            if (signPages.length === 0) throw new Error("Enter which pages to sign, e.g. 1-3, 5.");
+          } else {
+            signPages = [opts.signPage];
+          }
           out = await signPdf(
             file,
             opts.signatureDataUrl,
-            opts.signPage,
+            signPages,
             opts.signX,
             opts.signY,
             opts.signWidth,
             opts.signHeight,
           );
           break;
+        }
         case "redact-pdf":
           // For now, redact selected areas. Users can specify via options.
           throw new Error("Select areas on the preview to redact, then process.");
@@ -1073,23 +1100,46 @@ function ToolPage() {
               <div className="rounded-xl border border-border bg-white p-1">
                 <canvas
                   ref={sigCanvasRef}
-                  width={280}
-                  height={80}
-                  className="w-full cursor-crosshair rounded-lg"
-                  onMouseDown={startDraw}
-                  onMouseMove={draw}
-                  onMouseUp={endDraw}
-                  onMouseLeave={endDraw}
+                  width={600}
+                  height={200}
+                  className="h-32 w-full cursor-crosshair touch-none rounded-lg"
+                  onPointerDown={startDraw}
+                  onPointerMove={draw}
+                  onPointerUp={endDraw}
+                  onPointerLeave={endDraw}
+                  onPointerCancel={endDraw}
                 />
               </div>
               <Button variant="ghost" size="sm" onClick={clearSignature} className="text-xs">
                 Clear signature
               </Button>
             </div>
+
+            <div className="space-y-2">
+              <Label>Apply to</Label>
+              <Segmented
+                value={opts.signPagesMode}
+                onChange={(v) => set("signPagesMode", v)}
+                options={[
+                  { value: "current", label: "This page" },
+                  { value: "all", label: "All pages" },
+                  { value: "range", label: "Custom" },
+                ]}
+              />
+              {opts.signPagesMode === "range" && (
+                <Input
+                  value={opts.signRanges}
+                  onChange={(e) => set("signRanges", e.target.value)}
+                  placeholder={`e.g. 1-3, 5${pages ? ` (of ${pages})` : ""}`}
+                  className="rounded-xl"
+                />
+              )}
+            </div>
+
             <p className="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
               {files.length === 0
                 ? "Upload a PDF, then drag the box on the page preview to place your signature."
-                : "Drag the box on the page preview to position your signature, and drag its corner to resize. Use the arrows above the preview to change pages."}
+                : "Drag the box on the page preview to position your signature, and drag its corner to resize. The signature is placed at the same spot on every selected page."}
             </p>
           </div>
         );
