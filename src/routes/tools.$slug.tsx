@@ -168,12 +168,9 @@ type Options = {
   // Sign
   signatureDataUrl: string;
   signPage: number;
-  signX: number;
-  signY: number;
-  signWidth: number;
-  signHeight: number;
-  signPagesMode: "current" | "all" | "range";
-  signRanges: string;
+  /** Per-page signature placements (top-left rect in PDF points). A page is
+   *  signed only if it has an entry here, so each page can have its own spot. */
+  signPlacements: Record<number, { x: number; y: number; width: number; height: number }>;
   // Edit
   editText: string;
   editPage: number;
@@ -208,12 +205,7 @@ const defaults: Options = {
   ownerPassword: "",
   signatureDataUrl: "",
   signPage: 0,
-  signX: 50,
-  signY: 700,
-  signWidth: 150,
-  signHeight: 50,
-  signPagesMode: "current",
-  signRanges: "",
+  signPlacements: {},
   editText: "",
   editPage: 0,
   editX: 50,
@@ -228,6 +220,9 @@ const defaults: Options = {
   selectedTextItemIdx: -1,
   jpgQuality: 92,
 };
+
+/** Starting rectangle (top-left, PDF points) for a newly signed page. */
+const DEFAULT_SIGN_RECT = { x: 50, y: 700, width: 150, height: 50 };
 
 function Segmented<T extends string | number>({
   value,
@@ -657,25 +652,13 @@ function ToolPage() {
           break;
         case "sign-pdf": {
           if (!opts.signatureDataUrl) throw new Error("Draw or upload a signature first.");
-          const total = pages ?? 1;
-          let signPages: number[];
-          if (opts.signPagesMode === "all") {
-            signPages = Array.from({ length: total }, (_, i) => i);
-          } else if (opts.signPagesMode === "range") {
-            signPages = parsePageRanges(opts.signRanges, total);
-            if (signPages.length === 0) throw new Error("Enter which pages to sign, e.g. 1-3, 5.");
-          } else {
-            signPages = [opts.signPage];
-          }
-          out = await signPdf(
-            file,
-            opts.signatureDataUrl,
-            signPages,
-            opts.signX,
-            opts.signY,
-            opts.signWidth,
-            opts.signHeight,
-          );
+          const placements = Object.entries(opts.signPlacements).map(([page, rect]) => ({
+            page: Number(page),
+            ...rect,
+          }));
+          if (placements.length === 0)
+            throw new Error("Place your signature on at least one page.");
+          out = await signPdf(file, opts.signatureDataUrl, placements);
           break;
         }
         case "redact-pdf":
@@ -1115,31 +1098,43 @@ function ToolPage() {
               </Button>
             </div>
 
-            <div className="space-y-2">
-              <Label>Apply to</Label>
-              <Segmented
-                value={opts.signPagesMode}
-                onChange={(v) => set("signPagesMode", v)}
-                options={[
-                  { value: "current", label: "This page" },
-                  { value: "all", label: "All pages" },
-                  { value: "range", label: "Custom" },
-                ]}
-              />
-              {opts.signPagesMode === "range" && (
-                <Input
-                  value={opts.signRanges}
-                  onChange={(e) => set("signRanges", e.target.value)}
-                  placeholder={`e.g. 1-3, 5${pages ? ` (of ${pages})` : ""}`}
-                  className="rounded-xl"
-                />
-              )}
-            </div>
+            {files.length > 0 && (
+              <div className="space-y-2">
+                <Label>Quick actions</Label>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="rounded-xl"
+                    onClick={() =>
+                      setOpts((prev) => {
+                        const base = prev.signPlacements[prev.signPage] ?? DEFAULT_SIGN_RECT;
+                        const next: Options["signPlacements"] = {};
+                        for (let i = 0; i < (pages ?? 1); i++) next[i] = { ...base };
+                        return { ...prev, signPlacements: next };
+                      })
+                    }
+                  >
+                    Sign all pages (this position)
+                  </Button>
+                  {Object.keys(opts.signPlacements).length > 0 && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="rounded-xl"
+                      onClick={() => set("signPlacements", {})}
+                    >
+                      Clear all
+                    </Button>
+                  )}
+                </div>
+              </div>
+            )}
 
             <p className="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
               {files.length === 0
-                ? "Upload a PDF, then drag the box on the page preview to place your signature."
-                : "Drag the box on the page preview to position your signature, and drag its corner to resize. The signature is placed at the same spot on every selected page."}
+                ? "Upload a PDF, then use “Sign this page” on the preview and drag the box to place your signature. Each page can have its own position."
+                : "On the preview, turn on “Sign this page” and drag the box to position your signature. Navigate pages to place it differently on each — or use “Sign all pages” to stamp the current position everywhere."}
             </p>
           </div>
         );
@@ -1551,20 +1546,34 @@ function ToolPage() {
                           pageCount={pages ?? 1}
                           pageDimensions={pageDimensions}
                           signatureUrl={opts.signatureDataUrl}
-                          rect={{
-                            x: opts.signX,
-                            y: opts.signY,
-                            width: opts.signWidth,
-                            height: opts.signHeight,
-                          }}
+                          rect={opts.signPlacements[opts.signPage] ?? null}
+                          signedPages={Object.keys(opts.signPlacements)
+                            .map(Number)
+                            .sort((a, b) => a - b)}
                           onChange={(r) =>
                             setOpts((prev) => ({
                               ...prev,
-                              signX: Math.round(r.x),
-                              signY: Math.round(r.y),
-                              signWidth: Math.round(r.width),
-                              signHeight: Math.round(r.height),
+                              signPlacements: {
+                                ...prev.signPlacements,
+                                [prev.signPage]: {
+                                  x: Math.round(r.x),
+                                  y: Math.round(r.y),
+                                  width: Math.round(r.width),
+                                  height: Math.round(r.height),
+                                },
+                              },
                             }))
+                          }
+                          onToggle={(enabled) =>
+                            setOpts((prev) => {
+                              const next = { ...prev.signPlacements };
+                              if (enabled)
+                                next[prev.signPage] = next[prev.signPage] ?? {
+                                  ...DEFAULT_SIGN_RECT,
+                                };
+                              else delete next[prev.signPage];
+                              return { ...prev, signPlacements: next };
+                            })
                           }
                           onPageChange={(p) => set("signPage", p)}
                         />

@@ -317,15 +317,20 @@ export async function ocrPdf(file: File): Promise<OutputFile[]> {
   return [await save(doc, `${baseName(file)}-ocr.pdf`)];
 }
 
-/** Embed a signature image onto one or more pages at the given coordinates. */
+/** One signature placement: a page and a top-left rectangle in PDF points. */
+export type SignPlacement = {
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+/** Stamp a signature image onto each given page at its own position/size. */
 export async function signPdf(
   file: File,
   signatureDataUrl: string,
-  pageIndices: number[],
-  x: number,
-  y: number,
-  sigWidth: number,
-  sigHeight: number,
+  placements: SignPlacement[],
 ): Promise<OutputFile[]> {
   const doc = await load(file);
   // Convert data URL to bytes
@@ -335,17 +340,16 @@ export async function signPdf(
   const sigImage = isPng ? await doc.embedPng(sigBytes) : await doc.embedJpg(sigBytes);
 
   const pageCount = doc.getPageCount();
-  // De-duplicate and keep only valid page indices.
-  for (const idx of [...new Set(pageIndices)]) {
-    if (idx < 0 || idx >= pageCount) continue;
-    const page = doc.getPage(idx);
+  for (const pl of placements) {
+    if (pl.page < 0 || pl.page >= pageCount) continue;
+    const page = doc.getPage(pl.page);
     const { height } = page.getSize();
     page.drawImage(sigImage, {
-      x,
+      x: pl.x,
       // PDF origin is bottom-left; convert from the top-left coordinates used by the UI.
-      y: height - y - sigHeight,
-      width: sigWidth,
-      height: sigHeight,
+      y: height - pl.y - pl.height,
+      width: pl.width,
+      height: pl.height,
     });
   }
   return [await save(doc, `${baseName(file)}-signed.pdf`)];
