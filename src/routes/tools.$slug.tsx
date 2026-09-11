@@ -19,6 +19,7 @@ import { SITE_URL } from "@/lib/site";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CropViewer } from "@/components/CropViewer";
+import { SignaturePlacer } from "@/components/SignaturePlacer";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
@@ -90,35 +91,38 @@ export const Route = createFileRoute("/tools/$slug")({
     const breadcrumbSchema = {
       "@context": "https://schema.org",
       "@type": "BreadcrumbList",
-      "itemListElement": [
-        { "@type": "ListItem", "position": 1, "name": "Home", "item": SITE_URL },
-        { "@type": "ListItem", "position": 2, "name": "PDF Tools", "item": `${SITE_URL}/#tools` },
-        { "@type": "ListItem", "position": 3, "name": loaderData?.name ?? "Tool", "item": url }
-      ]
+      itemListElement: [
+        { "@type": "ListItem", position: 1, name: "Home", item: SITE_URL },
+        { "@type": "ListItem", position: 2, name: "PDF Tools", item: `${SITE_URL}/#tools` },
+        { "@type": "ListItem", position: 3, name: loaderData?.name ?? "Tool", item: url },
+      ],
     };
 
-    const faqSchema = seo.faqs.length > 0 ? {
-      "@context": "https://schema.org",
-      "@type": "FAQPage",
-      "mainEntity": seo.faqs.map(faq => ({
-        "@type": "Question",
-        "name": faq.q,
-        "acceptedAnswer": {
-          "@type": "Answer",
-          "text": faq.a
-        }
-      }))
-    } : null;
+    const faqSchema =
+      seo.faqs.length > 0
+        ? {
+            "@context": "https://schema.org",
+            "@type": "FAQPage",
+            mainEntity: seo.faqs.map((faq) => ({
+              "@type": "Question",
+              name: faq.q,
+              acceptedAnswer: {
+                "@type": "Answer",
+                text: faq.a,
+              },
+            })),
+          }
+        : null;
 
     const webAppSchema = {
       "@context": "https://schema.org",
       "@type": "WebApplication",
-      "name": loaderData?.name ?? "PDF Tool",
-      "applicationCategory": "BrowserApplication",
-      "operatingSystem": "All",
-      "description": seo.seoDescription,
-      "url": url,
-      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+      name: loaderData?.name ?? "PDF Tool",
+      applicationCategory: "BrowserApplication",
+      operatingSystem: "All",
+      description: seo.seoDescription,
+      url: url,
+      offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
     };
 
     const schemas = [breadcrumbSchema, webAppSchema, faqSchema].filter(Boolean);
@@ -135,13 +139,11 @@ export const Route = createFileRoute("/tools/$slug")({
         { name: "twitter:title", content: seo.seoTitle },
         { name: "twitter:description", content: seo.seoDescription },
       ],
-      links: [
-        { rel: "canonical", href: url }
-      ],
-      scripts: schemas.map(schema => ({
+      links: [{ rel: "canonical", href: url }],
+      scripts: schemas.map((schema) => ({
         type: "application/ld+json",
-        children: JSON.stringify(schema)
-      }))
+        children: JSON.stringify(schema),
+      })),
     };
   },
   component: ToolPage,
@@ -273,7 +275,9 @@ function ToolPage() {
   const [pageOrder, setPageOrder] = useState<number[] | null>(null);
 
   const [batchMode, setBatchMode] = useState(false);
-  const [batchProgress, setBatchProgress] = useState<Record<string, "queued" | "processing" | "done" | "failed">>({});
+  const [batchProgress, setBatchProgress] = useState<
+    Record<string, "queued" | "processing" | "done" | "failed">
+  >({});
 
   // Signature canvas
   const sigCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -312,8 +316,9 @@ function ToolPage() {
       })
       .catch(() => active && setPages(null));
 
-    if (slug === "crop-pdf") {
-      getPageDimensions(first, cropPreviewPage)
+    if (slug === "crop-pdf" || slug === "sign-pdf") {
+      const previewPage = slug === "sign-pdf" ? opts.signPage : cropPreviewPage;
+      getPageDimensions(first, previewPage)
         .then((dims) => {
           if (active) setPageDimensions(dims);
         })
@@ -323,7 +328,7 @@ function ToolPage() {
     return () => {
       active = false;
     };
-  }, [files, tool.accepts, slug, cropPreviewPage]);
+  }, [files, tool.accepts, slug, cropPreviewPage, opts.signPage]);
 
   const selectedPages = useMemo(() => {
     if (!opts.ranges.trim() || !pages) return new Set<number>();
@@ -418,13 +423,15 @@ function ToolPage() {
       const isPaid = !!session; // Assuming session means paid/authenticated for now
       const maxFiles = isPaid ? 50 : 3;
       if (files.length > maxFiles) {
-        setError(`Batch limit exceeded. Free tier max is 3, Paid tier max is 50. You uploaded ${files.length}.`);
+        setError(
+          `Batch limit exceeded. Free tier max is 3, Paid tier max is 50. You uploaded ${files.length}.`,
+        );
         return;
       }
-      
+
       setBusy(true);
       setError(null);
-      
+
       const initialProgress: Record<string, "queued" | "processing" | "done" | "failed"> = {};
       files.forEach((f) => {
         initialProgress[f.name] = "queued";
@@ -434,28 +441,71 @@ function ToolPage() {
       const runSingleFile = async (file: File): Promise<OutputFile[]> => {
         let out: OutputFile[] = [];
         switch (slug) {
-          case "split-pdf": out = await splitPdf(file, opts.splitMode, opts.ranges); break;
-          case "remove-pages": out = await selectPages(file, opts.ranges, "remove"); break;
-          case "extract-pages": out = await selectPages(file, opts.ranges, "keep"); break;
-          case "rotate-pdf": out = await rotatePdf(file, opts.angle, opts.ranges); break;
-          case "word-to-pdf": out = await (await getPdfConvertOps()).wordToPdf(file); break;
-          case "powerpoint-to-pdf": out = await (await getPdfConvertOps()).powerpointToPdf(file); break;
-          case "excel-to-pdf": out = await (await getPdfConvertOps()).excelToPdf(file); break;
-          case "html-to-pdf": out = await (await getPdfConvertOps()).htmlToPdf(file); break;
-          case "pdf-to-jpg": out = await (await getPdfConvertOps()).pdfToJpg(file, opts.jpgQuality / 100); break;
-          case "pdf-to-word": out = await (await getPdfConvertOps()).pdfToWord(file); break;
-          case "pdf-to-powerpoint": out = await (await getPdfConvertOps()).pdfToPowerpoint(file); break;
-          case "pdf-to-excel": out = await (await getPdfConvertOps()).pdfToExcel(file); break;
-          case "pdf-to-pdfa": out = await pdfToPdfa(file); break;
-          case "add-page-numbers": out = await addPageNumbers(file, opts.position, opts.startAt); break;
-          case "watermark-pdf": out = await watermarkPdf(file, opts.text, opts.opacity, opts.wmAngle, opts.wmSize); break;
-          case "crop-pdf": out = await cropPdf(file, opts.pageCrops); break;
-          case "protect-pdf": out = await protectPdf(file, opts.userPassword, opts.ownerPassword); break;
-          case "unlock-pdf": out = await unlockPdf(file); break;
-          case "compress-pdf": out = await compressPdf(file, opts.level); break;
-          case "repair-pdf": out = await repairPdf(file); break;
-          case "ocr-pdf": out = await ocrPdf(file); break;
-          default: throw new Error("This tool isn't available for batch mode.");
+          case "split-pdf":
+            out = await splitPdf(file, opts.splitMode, opts.ranges);
+            break;
+          case "remove-pages":
+            out = await selectPages(file, opts.ranges, "remove");
+            break;
+          case "extract-pages":
+            out = await selectPages(file, opts.ranges, "keep");
+            break;
+          case "rotate-pdf":
+            out = await rotatePdf(file, opts.angle, opts.ranges);
+            break;
+          case "word-to-pdf":
+            out = await (await getPdfConvertOps()).wordToPdf(file);
+            break;
+          case "powerpoint-to-pdf":
+            out = await (await getPdfConvertOps()).powerpointToPdf(file);
+            break;
+          case "excel-to-pdf":
+            out = await (await getPdfConvertOps()).excelToPdf(file);
+            break;
+          case "html-to-pdf":
+            out = await (await getPdfConvertOps()).htmlToPdf(file);
+            break;
+          case "pdf-to-jpg":
+            out = await (await getPdfConvertOps()).pdfToJpg(file, opts.jpgQuality / 100);
+            break;
+          case "pdf-to-word":
+            out = await (await getPdfConvertOps()).pdfToWord(file);
+            break;
+          case "pdf-to-powerpoint":
+            out = await (await getPdfConvertOps()).pdfToPowerpoint(file);
+            break;
+          case "pdf-to-excel":
+            out = await (await getPdfConvertOps()).pdfToExcel(file);
+            break;
+          case "pdf-to-pdfa":
+            out = await pdfToPdfa(file);
+            break;
+          case "add-page-numbers":
+            out = await addPageNumbers(file, opts.position, opts.startAt);
+            break;
+          case "watermark-pdf":
+            out = await watermarkPdf(file, opts.text, opts.opacity, opts.wmAngle, opts.wmSize);
+            break;
+          case "crop-pdf":
+            out = await cropPdf(file, opts.pageCrops);
+            break;
+          case "protect-pdf":
+            out = await protectPdf(file, opts.userPassword, opts.ownerPassword);
+            break;
+          case "unlock-pdf":
+            out = await unlockPdf(file);
+            break;
+          case "compress-pdf":
+            out = await compressPdf(file, opts.level);
+            break;
+          case "repair-pdf":
+            out = await repairPdf(file);
+            break;
+          case "ocr-pdf":
+            out = await ocrPdf(file);
+            break;
+          default:
+            throw new Error("This tool isn't available for batch mode.");
         }
         return out;
       };
@@ -468,7 +518,7 @@ function ToolPage() {
         if (currentIndex >= files.length) return;
         const i = currentIndex++;
         const file = files[i]!;
-        
+
         setBatchProgress((p) => ({ ...p, [file.name]: "processing" }));
         try {
           const res = await runSingleFile(file);
@@ -481,9 +531,11 @@ function ToolPage() {
         await processNext();
       };
 
-      const workers = Array.from({ length: Math.min(MAX_CONCURRENT, files.length) }).map(() => processNext());
+      const workers = Array.from({ length: Math.min(MAX_CONCURRENT, files.length) }).map(() =>
+        processNext(),
+      );
       await Promise.all(workers);
-      
+
       setResults(allOut);
       setBusy(false);
       return;
@@ -891,7 +943,12 @@ function ToolPage() {
           </p>
         );
       case "crop-pdf": {
-        const currentCrop = opts.pageCrops[cropPreviewPage] || { top: 20, right: 20, bottom: 20, left: 20 };
+        const currentCrop = opts.pageCrops[cropPreviewPage] || {
+          top: 20,
+          right: 20,
+          bottom: 20,
+          left: 20,
+        };
         const setCrop = (key: "top" | "right" | "bottom" | "left", val: number) => {
           setOpts((prev) => ({
             ...prev,
@@ -1029,60 +1086,11 @@ function ToolPage() {
                 Clear signature
               </Button>
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <Label>Page</Label>
-                <Input
-                  type="number"
-                  min={1}
-                  max={pages ?? 1}
-                  value={opts.signPage + 1}
-                  onChange={(e) => set("signPage", Math.max(0, Number(e.target.value) - 1))}
-                  className="rounded-xl"
-                />
-              </div>
-              <div className="space-y-1">
-                <Label>Size (W×H)</Label>
-                <div className="flex gap-1">
-                  <Input
-                    type="number"
-                    min={20}
-                    value={opts.signWidth}
-                    onChange={(e) => set("signWidth", Number(e.target.value))}
-                    className="rounded-xl"
-                  />
-                  <Input
-                    type="number"
-                    min={10}
-                    value={opts.signHeight}
-                    onChange={(e) => set("signHeight", Number(e.target.value))}
-                    className="rounded-xl"
-                  />
-                </div>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <Label>X position</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  value={opts.signX}
-                  onChange={(e) => set("signX", Number(e.target.value))}
-                  className="rounded-xl"
-                />
-              </div>
-              <div className="space-y-1">
-                <Label>Y position</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  value={opts.signY}
-                  onChange={(e) => set("signY", Number(e.target.value))}
-                  className="rounded-xl"
-                />
-              </div>
-            </div>
+            <p className="rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
+              {files.length === 0
+                ? "Upload a PDF, then drag the box on the page preview to place your signature."
+                : "Drag the box on the page preview to position your signature, and drag its corner to resize. Use the arrows above the preview to change pages."}
+            </p>
           </div>
         );
       case "redact-pdf":
@@ -1220,12 +1228,12 @@ function ToolPage() {
     <div className="min-h-screen">
       <IslandNav />
       <main className="mx-auto w-full max-w-5xl px-6 pt-28 md:pt-32">
-        <Breadcrumbs 
+        <Breadcrumbs
           items={[
             { label: "Home", href: "/" },
             { label: "PDF Tools", href: "/#tools" },
-            { label: tool.name }
-          ]} 
+            { label: tool.name },
+          ]}
         />
 
         <header className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 sm:flex sm:justify-between">
@@ -1282,23 +1290,27 @@ function ToolPage() {
               </div>
             )}
             {results.length > 1 && (
-              <Button variant="outline" className="mt-4 rounded-full" onClick={async () => {
-                if (batchMode) {
-                  const zip = new JSZip();
-                  for (const out of results) {
-                    zip.file(out.name, out.blob);
+              <Button
+                variant="outline"
+                className="mt-4 rounded-full"
+                onClick={async () => {
+                  if (batchMode) {
+                    const zip = new JSZip();
+                    for (const out of results) {
+                      zip.file(out.name, out.blob);
+                    }
+                    const content = await zip.generateAsync({ type: "blob" });
+                    const url = URL.createObjectURL(content);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `batch-results-${Date.now()}.zip`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  } else {
+                    downloadAll();
                   }
-                  const content = await zip.generateAsync({ type: "blob" });
-                  const url = URL.createObjectURL(content);
-                  const a = document.createElement("a");
-                  a.href = url;
-                  a.download = `batch-results-${Date.now()}.zip`;
-                  a.click();
-                  URL.revokeObjectURL(url);
-                } else {
-                  downloadAll();
-                }
-              }}>
+                }}
+              >
                 <Download className="size-4" /> Download all {batchMode ? "as ZIP" : ""}
               </Button>
             )}
@@ -1352,10 +1364,18 @@ function ToolPage() {
                     {!tool.multiple && (
                       <div className="flex items-center justify-between mb-4 rounded-xl bg-accent p-3">
                         <div className="space-y-0.5">
-                          <Label htmlFor="batch-mode" className="text-sm font-medium">Batch Mode</Label>
-                          <p className="text-xs text-muted-foreground">Process multiple files at once</p>
+                          <Label htmlFor="batch-mode" className="text-sm font-medium">
+                            Batch Mode
+                          </Label>
+                          <p className="text-xs text-muted-foreground">
+                            Process multiple files at once
+                          </p>
                         </div>
-                        <Switch id="batch-mode" checked={batchMode} onCheckedChange={setBatchMode} />
+                        <Switch
+                          id="batch-mode"
+                          checked={batchMode}
+                          onCheckedChange={setBatchMode}
+                        />
                       </div>
                     )}
                     <DropZone
@@ -1366,9 +1386,11 @@ function ToolPage() {
                         setFiles(f);
                         setError(null);
                       }}
-                      label={(tool.multiple || batchMode) ? "Drop your files here" : "Drop your file here"}
+                      label={
+                        tool.multiple || batchMode ? "Drop your files here" : "Drop your file here"
+                      }
                     />
-                    
+
                     {batchMode && files.length > 0 && Object.keys(batchProgress).length > 0 && (
                       <div className="mt-4 space-y-2">
                         <h4 className="text-sm font-semibold">Batch Progress</h4>
@@ -1376,13 +1398,20 @@ function ToolPage() {
                           {files.map((f) => (
                             <li key={f.name} className="flex justify-between border-b pb-1">
                               <span className="truncate w-3/4">{f.name}</span>
-                              <span className={cn(
-                                "capitalize text-xs font-medium",
-                                batchProgress[f.name] === 'done' ? "text-emerald-600" :
-                                batchProgress[f.name] === 'failed' ? "text-destructive" :
-                                batchProgress[f.name] === 'processing' ? "text-blue-600" :
-                                "text-muted-foreground"
-                              )}>{batchProgress[f.name]}</span>
+                              <span
+                                className={cn(
+                                  "capitalize text-xs font-medium",
+                                  batchProgress[f.name] === "done"
+                                    ? "text-emerald-600"
+                                    : batchProgress[f.name] === "failed"
+                                      ? "text-destructive"
+                                      : batchProgress[f.name] === "processing"
+                                        ? "text-blue-600"
+                                        : "text-muted-foreground",
+                                )}
+                              >
+                                {batchProgress[f.name]}
+                              </span>
                             </li>
                           ))}
                         </ul>
@@ -1431,7 +1460,12 @@ function ToolPage() {
                             pageIndex={cropPreviewPage}
                             pageDimensions={pageDimensions}
                             cropMargins={
-                              opts.pageCrops[cropPreviewPage] || { top: 20, right: 20, bottom: 20, left: 20 }
+                              opts.pageCrops[cropPreviewPage] || {
+                                top: 20,
+                                right: 20,
+                                bottom: 20,
+                                left: 20,
+                              }
                             }
                             onCropChange={(margins) => {
                               setOpts((prev) => ({
@@ -1460,6 +1494,30 @@ function ToolPage() {
                             />
                           </div>
                         </div>
+                      ) : slug === "sign-pdf" ? (
+                        <SignaturePlacer
+                          file={files[0]}
+                          pageIndex={opts.signPage}
+                          pageCount={pages ?? 1}
+                          pageDimensions={pageDimensions}
+                          signatureUrl={opts.signatureDataUrl}
+                          rect={{
+                            x: opts.signX,
+                            y: opts.signY,
+                            width: opts.signWidth,
+                            height: opts.signHeight,
+                          }}
+                          onChange={(r) =>
+                            setOpts((prev) => ({
+                              ...prev,
+                              signX: Math.round(r.x),
+                              signY: Math.round(r.y),
+                              signWidth: Math.round(r.width),
+                              signHeight: Math.round(r.height),
+                            }))
+                          }
+                          onPageChange={(p) => set("signPage", p)}
+                        />
                       ) : (
                         <PdfPreview
                           file={files[0]}
@@ -1515,7 +1573,7 @@ function ToolPage() {
               <section>
                 <h2 className="text-xl font-semibold mb-4">About the {tool.name} tool</h2>
                 <div className="text-muted-foreground space-y-4 text-sm leading-relaxed">
-                  {seo.seoIntro.split('\n\n').map((paragraph, idx) => (
+                  {seo.seoIntro.split("\n\n").map((paragraph, idx) => (
                     <p key={idx}>{paragraph}</p>
                   ))}
                 </div>
@@ -1523,7 +1581,7 @@ function ToolPage() {
 
               {seo.howTo.length > 0 && (
                 <section>
-                  <h2 className="text-xl font-semibold mb-6">How to {slug.split('-').join(' ')}</h2>
+                  <h2 className="text-xl font-semibold mb-6">How to {slug.split("-").join(" ")}</h2>
                   <ol className="space-y-4">
                     {seo.howTo.map((step, idx) => (
                       <li key={idx} className="flex gap-4">
@@ -1543,7 +1601,10 @@ function ToolPage() {
               <section className="rounded-2xl bg-primary/5 p-6 border border-primary/10">
                 <h2 className="text-lg font-semibold text-primary mb-3">Why use Pagize?</h2>
                 <p className="text-sm text-muted-foreground leading-relaxed">
-                  Pagize is designed to process supported documents directly in your browser. This means your files remain securely on your device and are never unnecessarily uploaded to a processing server. Experience blazing fast speeds and total privacy for your sensitive documents.
+                  Pagize is designed to process supported documents directly in your browser. This
+                  means your files remain securely on your device and are never unnecessarily
+                  uploaded to a processing server. Experience blazing fast speeds and total privacy
+                  for your sensitive documents.
                 </p>
               </section>
 
@@ -1565,7 +1626,7 @@ function ToolPage() {
                 <section>
                   <h2 className="text-xl font-semibold mb-4">Related Tools</h2>
                   <div className="flex flex-wrap gap-3">
-                    {seo.relatedTools.map(relatedSlug => {
+                    {seo.relatedTools.map((relatedSlug) => {
                       const relatedTool = getTool(relatedSlug);
                       if (!relatedTool) return null;
                       return (
