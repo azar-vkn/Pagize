@@ -597,12 +597,10 @@ export async function pdfToWord(file: File): Promise<OutputFile[]> {
   for (let pageIdx = 0; pageIdx < numPages; pageIdx++) {
     const pageLines = pages?.[pageIdx] ?? [];
 
-    // Page break before every page except the first
-    if (pageIdx > 0) {
-      allParagraphs.push(
-        `<w:p><w:pPr><w:rPr></w:rPr></w:pPr><w:r><w:br w:type="page"/></w:r></w:p>`,
-      );
-    }
+    // Start every page after the first on a fresh page. This is applied as
+    // pageBreakBefore on the page's first block — a standalone page-break
+    // paragraph would land on its own (blank) page after a full-height image.
+    let pendingBreak = pageIdx > 0;
 
     // A page that contains a table, or a page with no selectable text
     // (scanned/image-only), is embedded as a page image rather than shredded
@@ -616,12 +614,15 @@ export async function pdfToWord(file: File): Promise<OutputFile[]> {
         const relId = `rId${media.length + 2}`; // rId1 is styles.xml
         const name = `image${media.length + 1}.jpeg`;
         media.push({ relId, name, bytes });
-        const fit = Math.min(DOCX_USABLE_W_PT / dims.width, DOCX_USABLE_H_PT / dims.height, 1);
+        // 0.98 leaves a hair of slack so the image never overflows to a blank page.
+        const fit = Math.min(DOCX_USABLE_W_PT / dims.width, DOCX_USABLE_H_PT / dims.height) * 0.98;
         const cx = Math.round(dims.width * fit * EMU_PER_PT);
         const cy = Math.round(dims.height * fit * EMU_PER_PT);
-        allParagraphs.push(docxImageParagraph(relId, cx, cy, `Page ${pageIdx + 1}`));
+        allParagraphs.push(docxImageParagraph(relId, cx, cy, `Page ${pageIdx + 1}`, pendingBreak));
       } catch {
-        allParagraphs.push(`<w:p/>`); // rendering failed — keep the doc valid
+        allParagraphs.push(
+          pendingBreak ? `<w:p><w:pPr><w:pageBreakBefore/></w:pPr></w:p>` : `<w:p/>`,
+        );
       }
       continue;
     }
@@ -629,7 +630,9 @@ export async function pdfToWord(file: File): Promise<OutputFile[]> {
     for (const line of pageLines) {
       // Empty lines (no runs) become empty paragraphs for spacing
       if (line.runs.length === 0) {
-        allParagraphs.push(`<w:p><w:pPr><w:spacing w:after="0"/></w:pPr></w:p>`);
+        const breakPr = pendingBreak ? "<w:pageBreakBefore/>" : "";
+        pendingBreak = false;
+        allParagraphs.push(`<w:p><w:pPr>${breakPr}<w:spacing w:after="0"/></w:pPr></w:p>`);
         continue;
       }
 
@@ -640,6 +643,9 @@ export async function pdfToWord(file: File): Promise<OutputFile[]> {
       const allBold = line.runs.every((r) => r.isBold);
       const isHeading = isLargeFont && allBold;
       const isSubheading = isLargeFont && !allBold;
+
+      const breakPr = pendingBreak ? "<w:pageBreakBefore/>" : "";
+      pendingBreak = false;
 
       let pStyle = "";
       if (isHeading) {
@@ -665,7 +671,7 @@ export async function pdfToWord(file: File): Promise<OutputFile[]> {
         })
         .join("");
 
-      allParagraphs.push(`<w:p><w:pPr>${pStyle}${pSpacing}</w:pPr>${runsXml}</w:p>`);
+      allParagraphs.push(`<w:p><w:pPr>${breakPr}${pStyle}${pSpacing}</w:pPr>${runsXml}</w:p>`);
     }
   }
 
@@ -678,7 +684,7 @@ export async function pdfToWord(file: File): Promise<OutputFile[]> {
 <w:body>${allParagraphs.join("")}
 <w:sectPr>
   <w:pgSz w:w="12240" w:h="15840"/>
-  <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>
+  <w:pgMar w:top="576" w:right="576" w:bottom="576" w:left="576" w:header="288" w:footer="288" w:gutter="0"/>
 </w:sectPr>
 </w:body>
 </w:document>`;
@@ -750,16 +756,25 @@ ${imageRels}</Relationships>`;
   return [{ name: `${baseName(file)}.docx`, blob }];
 }
 
-// DOCX page geometry: letter minus 1" margins, and EMUs per point (914400/72).
+// DOCX page geometry: letter minus 0.4" margins, and EMUs per point (914400/72).
 const EMU_PER_PT = 12700;
-const DOCX_USABLE_W_PT = 468;
-const DOCX_USABLE_H_PT = 648;
+const DOCX_USABLE_W_PT = 554; // letter 612pt − 2×0.4" margins
+const DOCX_USABLE_H_PT = 734; // letter 792pt − 2×0.4" margins
 
 /** An inline-image paragraph (DrawingML) for an embedded page raster. */
-function docxImageParagraph(relId: string, cxEmu: number, cyEmu: number, name: string): string {
+function docxImageParagraph(
+  relId: string,
+  cxEmu: number,
+  cyEmu: number,
+  name: string,
+  breakBefore = false,
+): string {
   const safe = escapeXml(name);
+  // Zero paragraph spacing so a full-page image doesn't spill onto a blank page;
+  // page separation is done with pageBreakBefore, not a standalone break run.
+  const pPr = `<w:pPr>${breakBefore ? "<w:pageBreakBefore/>" : ""}<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>`;
   return (
-    `<w:p><w:r><w:drawing>` +
+    `<w:p>${pPr}<w:r><w:drawing>` +
     `<wp:inline distT="0" distB="0" distL="0" distR="0">` +
     `<wp:extent cx="${cxEmu}" cy="${cyEmu}"/>` +
     `<wp:docPr id="1" name="${safe}"/>` +
