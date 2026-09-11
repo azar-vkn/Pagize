@@ -100,6 +100,76 @@ export async function getPageDimensions(
   return { width: viewport.width, height: viewport.height };
 }
 
+/** Collapse near-equal values (within tol) into a single ascending list. */
+function clusterSorted(values: number[], tol: number): number[] {
+  const sorted = [...values].sort((a, b) => a - b);
+  const out: number[] = [];
+  for (const v of sorted) {
+    if (out.length && v - out[out.length - 1]! <= tol) continue;
+    out.push(v);
+  }
+  return out;
+}
+
+export interface PageLayout {
+  width: number;
+  height: number;
+  /** Vertical ruling lines (column boundaries), ascending x. PDF user space. */
+  colBounds: number[];
+  /** Horizontal ruling lines (row boundaries), descending y (top first). */
+  rowBounds: number[];
+  /** Positioned text pieces, in PDF user space (y up). */
+  items: { x: number; y: number; str: string }[];
+}
+
+/**
+ * Extract a page's ruling lines and positioned text without rendering to canvas.
+ * Table borders are drawn as thin filled/stroked rectangles; their bounding
+ * boxes (from the operator list) give the column/row grid. Used to reconstruct
+ * tables when converting a PDF to an editable document.
+ */
+export async function extractPageLayout(file: File, pageIndex: number): Promise<PageLayout> {
+  const pdfjs = await getPdfJs();
+  if (!pdfjs) throw new Error("pdf.js cannot be used on the server");
+  const doc = await getDoc(file);
+  const page = await doc.getPage(pageIndex + 1);
+  const viewport = page.getViewport({ scale: 1 });
+  const OPS = pdfjs.OPS;
+  const paintOps = new Set<number>([OPS.fill, OPS.eoFill, OPS.stroke]);
+
+  const opList = await page.getOperatorList();
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (let i = 0; i < opList.fnArray.length; i++) {
+    if (opList.fnArray[i] !== OPS.constructPath) continue;
+    const args = opList.argsArray[i] as [number, unknown, ArrayLike<number> | undefined];
+    if (!paintOps.has(args[0])) continue;
+    const mm = args[2]; // [minX, minY, maxX, maxY]
+    if (!mm || mm.length < 4) continue;
+    const w = mm[2]! - mm[0]!;
+    const h = mm[3]! - mm[1]!;
+    // Ignore full-page background/clip rectangles.
+    if (w > viewport.width * 0.95 && h > viewport.height * 0.95) continue;
+    if (h <= 2 && w > 10)
+      ys.push((mm[1]! + mm[3]!) / 2); // horizontal rule
+    else if (w <= 2 && h > 10) xs.push((mm[0]! + mm[2]!) / 2); // vertical rule
+  }
+
+  const textContent = await page.getTextContent();
+  const items = textContent.items
+    .map((it) => it as { str?: string; transform?: number[] })
+    .filter((it) => it.str && it.str.trim() && it.transform)
+    .map((it) => ({ x: it.transform![4]!, y: it.transform![5]!, str: it.str! }));
+
+  return {
+    width: viewport.width,
+    height: viewport.height,
+    colBounds: clusterSorted(xs, 5),
+    rowBounds: clusterSorted(ys, 4).sort((a, b) => b - a),
+    items,
+  };
+}
+
 /** Render a page to a Blob (JPEG) at a given DPI-equivalent scale. */
 export async function renderPageToBlob(
   file: File,

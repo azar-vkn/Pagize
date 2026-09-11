@@ -12,6 +12,8 @@ import {
   getPageDimensions,
   extractAllText,
   extractAllTextStructured,
+  extractPageLayout,
+  type PageLayout,
 } from "./pdf-renderer";
 
 const baseName = (file: File) => file.name.replace(/\.[^.]+$/, "");
@@ -533,45 +535,68 @@ export async function pdfToJpg(file: File, quality = 0.92): Promise<OutputFile[]
 
 /** Extract text from PDF and create a properly formatted DOCX file. */
 export async function pdfToWord(file: File): Promise<OutputFile[]> {
-  const pages = await extractAllTextStructured(file);
+  const numPages = await getPageCount(file);
 
-  // Determine the most common font size and font family to use as defaults
-  const fontSizeCounts = new Map<number, number>();
-  const fontFamilyCounts = new Map<string, number>();
-  for (const page of pages) {
-    for (const line of page) {
-      for (const run of line.runs) {
-        if (!run.text.trim()) continue;
-        const rounded = Math.round(run.fontSize);
-        fontSizeCounts.set(rounded, (fontSizeCounts.get(rounded) ?? 0) + 1);
-        fontFamilyCounts.set(run.fontFamily, (fontFamilyCounts.get(run.fontFamily) ?? 0) + 1);
+  // First pass: read each page's ruling-line layout (fast — no canvas render)
+  // and decide whether it reconstructs to a table, needs a page image, or is
+  // plain text.
+  const layouts: (PageLayout | null)[] = [];
+  const renders: PageRender[] = [];
+  for (let p = 0; p < numPages; p++) {
+    let layout: PageLayout | null = null;
+    try {
+      layout = await extractPageLayout(file, p);
+    } catch {
+      layout = null;
+    }
+    layouts.push(layout);
+    renders.push(layout ? reconstructPageTable(layout) : null);
+  }
+
+  // The structured (canvas-based) text pass is only needed when some page is
+  // plain text — table/image-only PDFs skip it entirely.
+  const needsText = renders.some((r, i) => r === null && (layouts[i]?.items.length ?? 0) > 0);
+  const pages = needsText ? await extractAllTextStructured(file) : null;
+
+  // Determine the most common font size and family to use as document defaults.
+  let bodyFontSize = 11;
+  let bodyFontFamily = "Arial";
+  if (pages) {
+    const fontSizeCounts = new Map<number, number>();
+    const fontFamilyCounts = new Map<string, number>();
+    for (const page of pages) {
+      for (const line of page) {
+        for (const run of line.runs) {
+          if (!run.text.trim()) continue;
+          const rounded = Math.round(run.fontSize);
+          fontSizeCounts.set(rounded, (fontSizeCounts.get(rounded) ?? 0) + 1);
+          fontFamilyCounts.set(run.fontFamily, (fontFamilyCounts.get(run.fontFamily) ?? 0) + 1);
+        }
       }
     }
-  }
-  let bodyFontSize = 12;
-  let bodyFontFamily = "Arial";
-  let maxCount = 0;
-  for (const [size, count] of fontSizeCounts) {
-    if (count > maxCount) {
-      maxCount = count;
-      bodyFontSize = size;
+    let maxCount = 0;
+    for (const [size, count] of fontSizeCounts) {
+      if (count > maxCount) {
+        maxCount = count;
+        bodyFontSize = size;
+      }
     }
-  }
-  maxCount = 0;
-  for (const [family, count] of fontFamilyCounts) {
-    if (count > maxCount) {
-      maxCount = count;
-      bodyFontFamily = family;
+    maxCount = 0;
+    for (const [family, count] of fontFamilyCounts) {
+      if (count > maxCount) {
+        maxCount = count;
+        bodyFontFamily = family;
+      }
     }
   }
 
   // Build DOCX XML paragraphs
   const allParagraphs: string[] = [];
-  // Images embedded for pages that have no extractable text (scanned/image PDFs).
+  // Images embedded for pages that are scanned or hold a too-complex table.
   const media: { relId: string; name: string; bytes: Uint8Array }[] = [];
 
-  for (let pageIdx = 0; pageIdx < pages.length; pageIdx++) {
-    const pageLines = pages[pageIdx] ?? [];
+  for (let pageIdx = 0; pageIdx < numPages; pageIdx++) {
+    const pageLines = pages?.[pageIdx] ?? [];
 
     // Page break before every page except the first
     if (pageIdx > 0) {
@@ -580,11 +605,18 @@ export async function pdfToWord(file: File): Promise<OutputFile[]> {
       );
     }
 
-    // A page with no selectable text is likely scanned/image-only. Extracting
-    // text yields nothing, so render the whole page and embed it as an image
-    // instead of emitting an empty page.
-    const pageHasText = pageLines.some((line) => line.runs.some((r) => r.text.trim()));
-    if (!pageHasText) {
+    // A clean table grid becomes an editable table.
+    const render = renders[pageIdx];
+    if (render?.kind === "table") {
+      allParagraphs.push(docxTableXml(render.rows, render.colWidths));
+      continue;
+    }
+
+    // A complex/low-confidence table, or a page with no selectable text
+    // (scanned/image-only), is embedded as a page image rather than shredded
+    // into mis-ordered paragraphs.
+    const pageHasText = (layouts[pageIdx]?.items.length ?? 0) > 0;
+    if (render?.kind === "image" || !pageHasText) {
       try {
         const dims = await getPageDimensions(file, pageIdx);
         const blob = await renderPageToBlob(file, pageIdx, 2, 0.85);
@@ -748,6 +780,123 @@ function docxImageParagraph(relId: string, cxEmu: number, cyEmu: number, name: s
     `</pic:pic></a:graphicData></a:graphic>` +
     `</wp:inline></w:drawing></w:r></w:p>`
   );
+}
+
+/** Collapse near-equal numbers (within tol) into one ascending list. */
+function clusterNums(values: number[], tol: number): number[] {
+  const sorted = [...values].sort((a, b) => a - b);
+  const out: number[] = [];
+  for (const v of sorted) {
+    if (out.length && v - out[out.length - 1]! <= tol) continue;
+    out.push(v);
+  }
+  return out;
+}
+
+/** Text of one table cell: its items grouped into lines (by y) then joined. */
+function cellTextFromItems(items: { x: number; y: number; str: string }[]): string {
+  if (!items.length) return "";
+  const lineYs = clusterNums(
+    items.map((t) => t.y),
+    3,
+  ).sort((a, b) => b - a);
+  return lineYs
+    .map((ly) =>
+      items
+        .filter((t) => Math.abs(t.y - ly) <= 3)
+        .sort((a, b) => a.x - b.x)
+        .map((t) => t.str)
+        .join(""),
+    )
+    .join("\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+type PageRender =
+  { kind: "table"; rows: string[][]; colWidths: number[] } | { kind: "image" } | null;
+
+/**
+ * Reconstruct a table from a page's ruling lines. Returns a table when the grid
+ * is a confident 2–8 columns holding most of the text; "image" when a grid is
+ * present but too complex to rebuild cleanly (the caller embeds the page as an
+ * image); null when the page has no table (the caller extracts plain text).
+ */
+function reconstructPageTable(layout: PageLayout): PageRender {
+  const cols = layout.colBounds.length - 1;
+  const rows = layout.rowBounds.length - 1;
+  if (layout.colBounds.length < 2 || layout.rowBounds.length < 2) return null;
+  if (cols < 2 || cols > 8 || rows < 1) return { kind: "image" };
+
+  const cells: { x: number; y: number; str: string }[][][] = Array.from({ length: rows }, () =>
+    Array.from({ length: cols }, () => []),
+  );
+  let inGrid = 0;
+  for (const it of layout.items) {
+    let c = -1;
+    for (let k = 0; k < cols; k++) {
+      if (it.x >= layout.colBounds[k]! - 1 && it.x < layout.colBounds[k + 1]! + 1) {
+        c = k;
+        break;
+      }
+    }
+    let r = -1;
+    for (let k = 0; k < rows; k++) {
+      if (it.y <= layout.rowBounds[k]! + 1 && it.y > layout.rowBounds[k + 1]! - 1) {
+        r = k;
+        break;
+      }
+    }
+    if (r >= 0 && c >= 0) {
+      cells[r]![c]!.push(it);
+      inGrid++;
+    }
+  }
+  // If most text sits outside the grid, it isn't really a table.
+  if (inGrid < layout.items.length * 0.4) return { kind: "image" };
+
+  const cellRows = cells.map((row) => row.map(cellTextFromItems));
+  const colWidths: number[] = [];
+  for (let k = 0; k < cols; k++) colWidths.push(layout.colBounds[k + 1]! - layout.colBounds[k]!);
+  return { kind: "table", rows: cellRows, colWidths };
+}
+
+const DOCX_TBL_BORDERS =
+  `<w:tblBorders>` +
+  `<w:top w:val="single" w:sz="4" w:space="0" w:color="auto"/>` +
+  `<w:left w:val="single" w:sz="4" w:space="0" w:color="auto"/>` +
+  `<w:bottom w:val="single" w:sz="4" w:space="0" w:color="auto"/>` +
+  `<w:right w:val="single" w:sz="4" w:space="0" w:color="auto"/>` +
+  `<w:insideH w:val="single" w:sz="4" w:space="0" w:color="auto"/>` +
+  `<w:insideV w:val="single" w:sz="4" w:space="0" w:color="auto"/>` +
+  `</w:tblBorders>`;
+
+/** Build a <w:tbl> from reconstructed rows, sizing columns to the page width. */
+function docxTableXml(rows: string[][], colWidths: number[]): string {
+  const totalTwips = 9360; // 6.5" usable width
+  const total = colWidths.reduce((a, b) => a + b, 0) || 1;
+  const widths = colWidths.map((w) => Math.max(200, Math.round((w / total) * totalTwips)));
+  const grid = `<w:tblGrid>${widths.map((w) => `<w:gridCol w:w="${w}"/>`).join("")}</w:tblGrid>`;
+  const trs = rows
+    .map((row) => {
+      const tcs = widths
+        .map((w, ci) => {
+          const paras =
+            (row[ci] ?? "")
+              .split("\n")
+              .map(
+                (line) =>
+                  `<w:p><w:r><w:t xml:space="preserve">${escapeXml(line)}</w:t></w:r></w:p>`,
+              )
+              .join("") || "<w:p/>";
+          return `<w:tc><w:tcPr><w:tcW w:w="${w}" w:type="dxa"/></w:tcPr>${paras}</w:tc>`;
+        })
+        .join("");
+      return `<w:tr>${tcs}</w:tr>`;
+    })
+    .join("");
+  return `<w:tbl><w:tblPr><w:tblW w:w="${totalTwips}" w:type="dxa"/>${DOCX_TBL_BORDERS}</w:tblPr>${grid}${trs}</w:tbl>`;
 }
 
 /** Extract text from PDF and create a simple PPTX file. */
