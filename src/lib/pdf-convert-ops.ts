@@ -770,9 +770,10 @@ function docxImageParagraph(
   breakBefore = false,
 ): string {
   const safe = escapeXml(name);
-  // Zero paragraph spacing so a full-page image doesn't spill onto a blank page;
-  // page separation is done with pageBreakBefore, not a standalone break run.
-  const pPr = `<w:pPr>${breakBefore ? "<w:pageBreakBefore/>" : ""}<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>`;
+  // Centre the image and zero paragraph spacing so a full-page image is balanced
+  // between the margins and can't spill onto a blank page; page separation is
+  // done with pageBreakBefore, not a standalone break run.
+  const pPr = `<w:pPr>${breakBefore ? "<w:pageBreakBefore/>" : ""}<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/><w:jc w:val="center"/></w:pPr>`;
   return (
     `<w:p>${pPr}<w:r><w:drawing>` +
     `<wp:inline distT="0" distB="0" distL="0" distR="0">` +
