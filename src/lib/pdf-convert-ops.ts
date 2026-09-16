@@ -6,15 +6,7 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import JSZip from "jszip";
 import type { OutputFile } from "./pdf-ops";
-import {
-  renderPageToBlob,
-  getPageCount,
-  getPageDimensions,
-  extractAllText,
-  extractAllTextStructured,
-  extractPageLayout,
-  type PageLayout,
-} from "./pdf-renderer";
+import { renderPageToBlob, getPageCount, getPageDimensions, extractAllText } from "./pdf-renderer";
 
 const baseName = (file: File) => file.name.replace(/\.[^.]+$/, "");
 
@@ -537,141 +529,30 @@ export async function pdfToJpg(file: File, quality = 0.92): Promise<OutputFile[]
 export async function pdfToWord(file: File): Promise<OutputFile[]> {
   const numPages = await getPageCount(file);
 
-  // First pass: read each page's ruling-line layout (fast — no canvas render)
-  // and flag pages that contain a table (embedded as an image) vs. plain text.
-  const layouts: (PageLayout | null)[] = [];
-  const isTablePage: boolean[] = [];
-  for (let p = 0; p < numPages; p++) {
-    let layout: PageLayout | null = null;
-    try {
-      layout = await extractPageLayout(file, p);
-    } catch {
-      layout = null;
-    }
-    layouts.push(layout);
-    isTablePage.push(layout ? pageHasTable(layout) : false);
-  }
-
-  // The structured (canvas-based) text pass is only needed when some page is
-  // plain text — table/image-only PDFs skip it entirely.
-  const needsText = layouts.some((l, i) => !isTablePage[i] && (l?.items.length ?? 0) > 0);
-  const pages = needsText ? await extractAllTextStructured(file) : null;
-
-  // Determine the most common font size and family to use as document defaults.
-  let bodyFontSize = 11;
-  let bodyFontFamily = "Arial";
-  if (pages) {
-    const fontSizeCounts = new Map<number, number>();
-    const fontFamilyCounts = new Map<string, number>();
-    for (const page of pages) {
-      for (const line of page) {
-        for (const run of line.runs) {
-          if (!run.text.trim()) continue;
-          const rounded = Math.round(run.fontSize);
-          fontSizeCounts.set(rounded, (fontSizeCounts.get(rounded) ?? 0) + 1);
-          fontFamilyCounts.set(run.fontFamily, (fontFamilyCounts.get(run.fontFamily) ?? 0) + 1);
-        }
-      }
-    }
-    let maxCount = 0;
-    for (const [size, count] of fontSizeCounts) {
-      if (count > maxCount) {
-        maxCount = count;
-        bodyFontSize = size;
-      }
-    }
-    maxCount = 0;
-    for (const [family, count] of fontFamilyCounts) {
-      if (count > maxCount) {
-        maxCount = count;
-        bodyFontFamily = family;
-      }
-    }
-  }
-
-  // Build DOCX XML paragraphs
-  const allParagraphs: string[] = [];
-  // Images embedded for pages that are scanned or hold a too-complex table.
   const media: { relId: string; name: string; bytes: Uint8Array }[] = [];
+  const allParagraphs: string[] = [];
 
+  // Render every page to a high-resolution image and embed it one-per-page, so
+  // the Word document is a faithful visual copy of the original. In a pure
+  // browser tool this is the only way to preserve arbitrary layout, fonts,
+  // tables and graphics exactly — the trade-off is that the result is a visual
+  // copy, not editable text.
   for (let pageIdx = 0; pageIdx < numPages; pageIdx++) {
-    const pageLines = pages?.[pageIdx] ?? [];
-
-    // Start every page after the first on a fresh page. This is applied as
-    // pageBreakBefore on the page's first block — a standalone page-break
-    // paragraph would land on its own (blank) page after a full-height image.
-    let pendingBreak = pageIdx > 0;
-
-    // A page that contains a table, or a page with no selectable text
-    // (scanned/image-only), is embedded as a page image rather than shredded
-    // into mis-ordered paragraphs.
-    const pageHasText = (layouts[pageIdx]?.items.length ?? 0) > 0;
-    if (isTablePage[pageIdx] || !pageHasText) {
-      try {
-        const dims = await getPageDimensions(file, pageIdx);
-        const blob = await renderPageToBlob(file, pageIdx, 2, 0.85);
-        const bytes = new Uint8Array(await blob.arrayBuffer());
-        const relId = `rId${media.length + 2}`; // rId1 is styles.xml
-        const name = `image${media.length + 1}.jpeg`;
-        media.push({ relId, name, bytes });
-        // 0.98 leaves a hair of slack so the image never overflows to a blank page.
-        const fit = Math.min(DOCX_USABLE_W_PT / dims.width, DOCX_USABLE_H_PT / dims.height) * 0.98;
-        const cx = Math.round(dims.width * fit * EMU_PER_PT);
-        const cy = Math.round(dims.height * fit * EMU_PER_PT);
-        allParagraphs.push(docxImageParagraph(relId, cx, cy, `Page ${pageIdx + 1}`, pendingBreak));
-      } catch {
-        allParagraphs.push(
-          pendingBreak ? `<w:p><w:pPr><w:pageBreakBefore/></w:pPr></w:p>` : `<w:p/>`,
-        );
-      }
-      continue;
-    }
-
-    for (const line of pageLines) {
-      // Empty lines (no runs) become empty paragraphs for spacing
-      if (line.runs.length === 0) {
-        const breakPr = pendingBreak ? "<w:pageBreakBefore/>" : "";
-        pendingBreak = false;
-        allParagraphs.push(`<w:p><w:pPr>${breakPr}<w:spacing w:after="0"/></w:pPr></w:p>`);
-        continue;
-      }
-
-      // Check if any run on this line is a heading candidate
-      const firstRun = line.runs[0];
-      const avgFontSize = line.runs.reduce((sum, r) => sum + r.fontSize, 0) / line.runs.length;
-      const isLargeFont = avgFontSize > bodyFontSize * 1.25;
-      const allBold = line.runs.every((r) => r.isBold);
-      const isHeading = isLargeFont && allBold;
-      const isSubheading = isLargeFont && !allBold;
-
-      const breakPr = pendingBreak ? "<w:pageBreakBefore/>" : "";
-      pendingBreak = false;
-
-      let pStyle = "";
-      if (isHeading) {
-        pStyle = `<w:pStyle w:val="Heading1"/>`;
-      } else if (isSubheading) {
-        pStyle = `<w:pStyle w:val="Heading2"/>`;
-      }
-
-      // Paragraph spacing
-      const spacingBefore = line.isNewParagraph ? 120 : 0;
-      const pSpacing = `<w:spacing w:before="${spacingBefore}" w:after="40" w:line="276" w:lineRule="auto"/>`;
-
-      // Build one <w:r> per TextRun
-      const runsXml = line.runs
-        .map((run) => {
-          const wordFontSize = Math.round(run.fontSize * 2);
-          const boldPr = run.isBold ? `<w:b/><w:bCs/>` : "";
-          const italicPr = run.isItalic ? `<w:i/><w:iCs/>` : "";
-          const sizePr = `<w:sz w:val="${wordFontSize}"/><w:szCs w:val="${wordFontSize}"/>`;
-          const fontPr = `<w:rFonts w:ascii="${escapeXml(run.fontFamily)}" w:hAnsi="${escapeXml(run.fontFamily)}" w:cs="${escapeXml(run.fontFamily)}"/>`;
-          const rPr = `<w:rPr>${fontPr}${boldPr}${italicPr}${sizePr}</w:rPr>`;
-          return `<w:r>${rPr}<w:t xml:space="preserve">${escapeXml(run.text)}</w:t></w:r>`;
-        })
-        .join("");
-
-      allParagraphs.push(`<w:p><w:pPr>${breakPr}${pStyle}${pSpacing}</w:pPr>${runsXml}</w:p>`);
+    const breakBefore = pageIdx > 0;
+    try {
+      const dims = await getPageDimensions(file, pageIdx);
+      const blob = await renderPageToBlob(file, pageIdx, 2.5, 0.9);
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      const relId = `rId${media.length + 1}`;
+      const name = `image${media.length + 1}.jpeg`;
+      media.push({ relId, name, bytes });
+      // 0.98 leaves a hair of slack so the image never spills onto a blank page.
+      const fit = Math.min(DOCX_USABLE_W_PT / dims.width, DOCX_USABLE_H_PT / dims.height) * 0.98;
+      const cx = Math.round(dims.width * fit * EMU_PER_PT);
+      const cy = Math.round(dims.height * fit * EMU_PER_PT);
+      allParagraphs.push(docxImageParagraph(relId, cx, cy, `Page ${pageIdx + 1}`, breakBefore));
+    } catch {
+      allParagraphs.push(breakBefore ? `<w:p><w:pPr><w:pageBreakBefore/></w:pPr></w:p>` : `<w:p/>`);
     }
   }
 
@@ -689,46 +570,13 @@ export async function pdfToWord(file: File): Promise<OutputFile[]> {
 </w:body>
 </w:document>`;
 
-  // Styles definition with default font
-  const defaultFontXml = `<w:rFonts w:ascii="${escapeXml(bodyFontFamily)}" w:hAnsi="${escapeXml(bodyFontFamily)}" w:cs="${escapeXml(bodyFontFamily)}"/>`;
-  const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-  <w:docDefaults>
-    <w:rPrDefault>
-      <w:rPr>
-        ${defaultFontXml}
-        <w:sz w:val="${Math.round(bodyFontSize * 2)}"/>
-        <w:szCs w:val="${Math.round(bodyFontSize * 2)}"/>
-      </w:rPr>
-    </w:rPrDefault>
-  </w:docDefaults>
-  <w:style w:type="paragraph" w:default="1" w:styleId="Normal">
-    <w:name w:val="Normal"/>
-    <w:rPr>${defaultFontXml}<w:sz w:val="${Math.round(bodyFontSize * 2)}"/><w:szCs w:val="${Math.round(bodyFontSize * 2)}"/></w:rPr>
-  </w:style>
-  <w:style w:type="paragraph" w:styleId="Heading1">
-    <w:name w:val="heading 1"/>
-    <w:basedOn w:val="Normal"/>
-    <w:pPr><w:spacing w:before="240" w:after="120"/></w:pPr>
-    <w:rPr><w:b/><w:bCs/><w:sz w:val="32"/><w:szCs w:val="32"/></w:rPr>
-  </w:style>
-  <w:style w:type="paragraph" w:styleId="Heading2">
-    <w:name w:val="heading 2"/>
-    <w:basedOn w:val="Normal"/>
-    <w:pPr><w:spacing w:before="200" w:after="80"/></w:pPr>
-    <w:rPr><w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr>
-  </w:style>
-</w:styles>`;
-
-  // Content types and relationships gain a jpeg default + one image relationship
-  // per embedded page when the document contains scanned/image-only pages.
+  // One jpeg default + one image relationship per embedded page.
   const jpegDefault = media.length ? `<Default Extension="jpeg" ContentType="image/jpeg"/>\n` : "";
   const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
 <Default Extension="xml" ContentType="application/xml"/>
 ${jpegDefault}<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
-<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
 </Types>`;
   const imageRels = media
     .map(
@@ -737,16 +585,13 @@ ${jpegDefault}<Override PartName="/word/document.xml" ContentType="application/v
     )
     .join("");
   const wordRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
-${imageRels}</Relationships>`;
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${imageRels}</Relationships>`;
 
   const zip = new JSZip();
   zip.file("[Content_Types].xml", contentTypes);
   zip.file("_rels/.rels", relsDocx);
   zip.file("word/_rels/document.xml.rels", wordRels);
   zip.file("word/document.xml", docXml);
-  zip.file("word/styles.xml", stylesXml);
   for (const m of media) zip.file(`word/media/${m.name}`, m.bytes);
 
   const blob = await zip.generateAsync({
@@ -788,26 +633,6 @@ function docxImageParagraph(
     `</pic:pic></a:graphicData></a:graphic>` +
     `</wp:inline></w:drawing></w:r></w:p>`
   );
-}
-
-/**
- * Whether a page contains a table, detected from its ruling lines. A table needs
- * a grid (≥2 column and ≥2 row boundaries) that most of the page's text sits
- * inside. Table pages are embedded as page images rather than reconstructed,
- * because rebuilding cells from a PDF is unreliable and loses fidelity.
- */
-function pageHasTable(layout: PageLayout): boolean {
-  if (layout.colBounds.length < 2 || layout.rowBounds.length < 2) return false;
-  if (layout.items.length === 0) return false;
-  const x0 = layout.colBounds[0]! - 2;
-  const x1 = layout.colBounds[layout.colBounds.length - 1]! + 2;
-  const yTop = layout.rowBounds[0]! + 2;
-  const yBot = layout.rowBounds[layout.rowBounds.length - 1]! - 2;
-  let inGrid = 0;
-  for (const it of layout.items) {
-    if (it.x >= x0 && it.x <= x1 && it.y <= yTop && it.y >= yBot) inGrid++;
-  }
-  return inGrid >= layout.items.length * 0.4;
 }
 
 /** Extract text from PDF and create a simple PPTX file. */

@@ -186,7 +186,7 @@ export const tools: Tool[] = [
   {
     slug: "pdf-to-word",
     name: "PDF to Word",
-    blurb: "Editable DOCX with layout kept.",
+    blurb: "A Word copy that matches the original.",
     icon: FileText,
     category: "convert-from",
     accepts: "application/pdf",
