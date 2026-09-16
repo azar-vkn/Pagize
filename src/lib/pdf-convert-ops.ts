@@ -12,8 +12,134 @@ const baseName = (file: File) => file.name.replace(/\.[^.]+$/, "");
 
 // ────────────── CONVERT TO PDF ──────────────
 
-/** Parse DOCX (a ZIP of XML) and render its text and images into a PDF. */
+/**
+ * Convert a Word document to PDF. Preferred path: render the DOCX faithfully to
+ * HTML (real fonts, colours, tables, images) and rasterize each page, so the
+ * output matches what Word itself would produce — the only pure-browser way to
+ * do that. Falls back to a text/table reconstruction if rendering isn't
+ * available or fails (e.g. during SSR).
+ */
 export async function wordToPdf(file: File): Promise<OutputFile[]> {
+  if (typeof document !== "undefined") {
+    try {
+      return await wordToPdfViaRender(file);
+    } catch (err) {
+      console.error("Faithful Word render failed; using reconstruction fallback:", err);
+    }
+  }
+  return wordToPdfReconstruct(file);
+}
+
+/** Render the DOCX to HTML, rasterize it, and slice it into PDF pages. */
+async function wordToPdfViaRender(file: File): Promise<OutputFile[]> {
+  const [docxPreview, html2canvasMod] = await Promise.all([
+    import("docx-preview"),
+    import("html2canvas"),
+  ]);
+  const html2canvas = html2canvasMod.default;
+
+  // Page size from the section properties (twips → CSS px at 96 dpi).
+  const buf = await file.arrayBuffer();
+  const zip = await JSZip.loadAsync(buf);
+  const docXml = (await zip.file("word/document.xml")?.async("string")) ?? "";
+  const pg = /<w:pgSz\b[^>]*?\bw:w="(\d+)"[^>]*?\bw:h="(\d+)"/.exec(docXml);
+  const PX_PER_TWIP = 96 / 72 / 20;
+  const pageWpx = pg ? Number(pg[1]) * PX_PER_TWIP : 816; // letter default
+  const pageHpx = pg ? Number(pg[2]) * PX_PER_TWIP : 1056;
+
+  // Render into an isolated iframe so the app's Tailwind theme (which defines
+  // its palette with oklch()) can't leak in — html2canvas 1.4.1 throws on
+  // oklch, so any inherited oklch color would abort the whole render.
+  const iframe = document.createElement("iframe");
+  iframe.style.cssText = `position:fixed;left:-99999px;top:0;width:${Math.ceil(pageWpx) + 40}px;height:${Math.ceil(pageHpx)}px;border:0;background:#ffffff;`;
+  document.body.appendChild(iframe);
+  const idoc = iframe.contentDocument;
+  if (!idoc) {
+    iframe.remove();
+    throw new Error("Could not create an isolated rendering frame.");
+  }
+  idoc.open();
+  idoc.write(
+    '<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:0;background:#ffffff;"></body></html>',
+  );
+  idoc.close();
+  const holder = idoc.createElement("div");
+  idoc.body.appendChild(holder);
+  try {
+    await docxPreview.renderAsync(buf, holder, undefined, {
+      className: "docx",
+      inWrapper: true,
+      breakPages: true,
+      renderHeaders: true,
+      renderFooters: true,
+      useBase64URL: true, // embed media inline so html2canvas can read it
+    });
+    const wrapper = holder.querySelector<HTMLElement>(".docx-wrapper") ?? holder;
+
+    // Wait for embedded images to finish decoding so the measured height and
+    // the rasterized height agree (otherwise pages get miscounted).
+    await Promise.all(
+      Array.from(idoc.querySelectorAll("img")).map((im) =>
+        im.complete
+          ? Promise.resolve()
+          : new Promise<void>((r) => {
+              im.onload = im.onerror = () => r();
+            }),
+      ),
+    );
+
+    // docx-preview breaks only at explicit page breaks, so the body is usually
+    // one tall block. Rasterize it once (capping the scale so long documents
+    // stay under the browser's max canvas dimension) and slice it into pages.
+    const contentHpx = Math.max(wrapper.scrollHeight, pageHpx);
+    const scale = Math.max(1, Math.min(2, 15000 / contentHpx));
+    const full = await html2canvas(wrapper, {
+      scale,
+      backgroundColor: "#ffffff",
+      useCORS: true,
+      logging: false,
+      windowWidth: Math.ceil(pageWpx) + 40,
+      windowHeight: Math.ceil(contentHpx),
+    });
+
+    const doc = await PDFDocument.create();
+    const pageWpt = pageWpx * 0.75; // px (96 dpi) → pt (72 dpi)
+    const pageHpt = pageHpx * 0.75;
+    const bandPx = pageHpx * scale;
+    const totalPages = Math.max(1, Math.ceil(full.height / bandPx));
+    for (let i = 0; i < totalPages; i++) {
+      const top = i * bandPx;
+      const sliceH = Math.min(bandPx, full.height - top);
+      if (sliceH <= 2) break; // skip an empty trailing sliver
+      const tmp = document.createElement("canvas");
+      tmp.width = full.width;
+      tmp.height = Math.round(sliceH);
+      const ctx = tmp.getContext("2d");
+      if (!ctx) continue;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, tmp.width, tmp.height);
+      ctx.drawImage(full, 0, top, full.width, sliceH, 0, 0, full.width, sliceH);
+      const dataUrl = tmp.toDataURL("image/jpeg", 0.92);
+      const jpgBytes = Uint8Array.from(atob(dataUrl.split(",")[1] ?? ""), (c) => c.charCodeAt(0));
+      const img = await doc.embedJpg(jpgBytes);
+      const page = doc.addPage([pageWpt, pageHpt]);
+      const drawH = (sliceH / scale) * 0.75; // full pages fill the page; last is shorter
+      page.drawImage(img, { x: 0, y: pageHpt - drawH, width: pageWpt, height: drawH });
+    }
+    const bytes = await doc.save();
+    return [
+      {
+        name: `${baseName(file)}.pdf`,
+        blob: new Blob([bytes as unknown as BlobPart], { type: "application/pdf" }),
+      },
+    ];
+  } finally {
+    iframe.remove();
+  }
+}
+
+/** Parse DOCX (a ZIP of XML) and render its text and images into a PDF. */
+async function wordToPdfReconstruct(file: File): Promise<OutputFile[]> {
   const zip = await JSZip.loadAsync(await file.arrayBuffer());
   const docXml = await zip.file("word/document.xml")?.async("string");
   if (!docXml) throw new Error("Could not read DOCX content. Make sure it's a valid .docx file.");
