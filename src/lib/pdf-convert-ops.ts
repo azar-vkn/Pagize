@@ -32,11 +32,7 @@ export async function wordToPdf(file: File): Promise<OutputFile[]> {
 
 /** Render the DOCX to HTML, rasterize it, and slice it into PDF pages. */
 async function wordToPdfViaRender(file: File): Promise<OutputFile[]> {
-  const [docxPreview, html2canvasMod] = await Promise.all([
-    import("docx-preview"),
-    import("html2canvas"),
-  ]);
-  const html2canvas = html2canvasMod.default;
+  const docxPreview = await import("docx-preview");
 
   // Page size from the section properties (twips → CSS px at 96 dpi).
   const buf = await file.arrayBuffer();
@@ -47,9 +43,9 @@ async function wordToPdfViaRender(file: File): Promise<OutputFile[]> {
   const pageWpx = pg ? Number(pg[1]) * PX_PER_TWIP : 816; // letter default
   const pageHpx = pg ? Number(pg[2]) * PX_PER_TWIP : 1056;
 
-  // Render into an isolated iframe so the app's Tailwind theme (which defines
-  // its palette with oklch()) can't leak in — html2canvas 1.4.1 throws on
-  // oklch, so any inherited oklch color would abort the whole render.
+  // Render into an isolated iframe so the app's Tailwind theme can't leak into
+  // the document's layout or measurements — the frame carries only a plain
+  // white page plus docx-preview's own styles.
   const iframe = document.createElement("iframe");
   iframe.style.cssText = `position:fixed;left:-99999px;top:0;width:${Math.ceil(pageWpx) + 40}px;height:${Math.ceil(pageHpx)}px;border:0;background:#ffffff;`;
   document.body.appendChild(iframe);
@@ -72,7 +68,7 @@ async function wordToPdfViaRender(file: File): Promise<OutputFile[]> {
       breakPages: true,
       renderHeaders: true,
       renderFooters: true,
-      useBase64URL: true, // embed media inline so html2canvas can read it
+      useBase64URL: true, // embed media inline so it survives serialization
     });
     const wrapper = holder.querySelector<HTMLElement>(".docx-wrapper") ?? holder;
 
@@ -89,18 +85,13 @@ async function wordToPdfViaRender(file: File): Promise<OutputFile[]> {
     );
 
     // docx-preview breaks only at explicit page breaks, so the body is usually
-    // one tall block. Rasterize it once (capping the scale so long documents
-    // stay under the browser's max canvas dimension) and slice it into pages.
+    // one tall block. Rasterize it once with the browser's own engine (via an
+    // SVG <foreignObject>, which reproduces collapsed table borders and text
+    // metrics exactly) and slice it into pages. Cap the
+    // scale so long documents stay under the browser's max canvas dimension.
     const contentHpx = Math.max(wrapper.scrollHeight, pageHpx);
     const scale = Math.max(1, Math.min(2, 15000 / contentHpx));
-    const full = await html2canvas(wrapper, {
-      scale,
-      backgroundColor: "#ffffff",
-      useCORS: true,
-      logging: false,
-      windowWidth: Math.ceil(pageWpx) + 40,
-      windowHeight: Math.ceil(contentHpx),
-    });
+    const full = await rasterizeViaForeignObject(wrapper, idoc, scale);
 
     const doc = await PDFDocument.create();
     const pageWpt = pageWpx * 0.75; // px (96 dpi) → pt (72 dpi)
@@ -136,6 +127,52 @@ async function wordToPdfViaRender(file: File): Promise<OutputFile[]> {
   } finally {
     iframe.remove();
   }
+}
+
+/**
+ * Rasterize a DOM element to a canvas using the browser's own rendering engine
+ * via an SVG <foreignObject>. This reproduces table borders, collapsed borders
+ * and text metrics exactly. All resources must be inlined (docx-preview's
+ * useBase64URL) so the canvas is not tainted.
+ */
+async function rasterizeViaForeignObject(
+  el: HTMLElement,
+  idoc: Document,
+  scale: number,
+): Promise<HTMLCanvasElement> {
+  const w = Math.ceil(el.scrollWidth);
+  const h = Math.ceil(el.scrollHeight);
+  const styleText = Array.from(idoc.querySelectorAll("style"))
+    .map((s) => s.textContent ?? "")
+    .join("\n");
+  const clone = el.cloneNode(true) as HTMLElement;
+  clone.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
+  clone.style.margin = "0";
+  const serialized = new XMLSerializer().serializeToString(clone);
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
+    `<foreignObject x="0" y="0" width="${w}" height="${h}">` +
+    `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${w}px;background:#ffffff;">` +
+    `<style>${styleText}</style>${serialized}</div>` +
+    `</foreignObject></svg>`;
+  const url = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+  const img = new Image();
+  img.width = w;
+  img.height = h;
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error("foreignObject SVG failed to load"));
+    img.src = url;
+  });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(w * scale);
+  canvas.height = Math.round(h * scale);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("no 2d context");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  return canvas;
 }
 
 /** Parse DOCX (a ZIP of XML) and render its text and images into a PDF. */
