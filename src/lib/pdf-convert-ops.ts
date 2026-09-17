@@ -70,6 +70,14 @@ async function wordToPdfViaRender(file: File): Promise<OutputFile[]> {
       renderFooters: true,
       useBase64URL: true, // embed media inline so it survives serialization
     });
+    // Strip docx-preview's on-screen chrome (gray gutter, page shadows and the
+    // margin between pages) so the measured height is exactly the content — an
+    // empty one-page doc then stays one page instead of spilling onto a second.
+    const override = idoc.createElement("style");
+    override.textContent =
+      ".docx-wrapper{padding:0 !important;background:#ffffff !important;}" +
+      ".docx-wrapper>section.docx{box-shadow:none !important;margin:0 !important;}";
+    idoc.head.appendChild(override);
     const wrapper = holder.querySelector<HTMLElement>(".docx-wrapper") ?? holder;
 
     // Wait for embedded images to finish decoding so the measured height and
@@ -165,11 +173,13 @@ function computePageCuts(
     });
     return [...set].filter((y) => y >= 0 && y <= totalPx).sort((a, b) => a - b);
   };
-  // Prefer breaks at whole table-row boundaries; fall back to paragraph/line
-  // boundaries only when a single row is taller than a page.
-  const rowEdges = collect("tr");
+  // Prefer breaks at an explicit page boundary (docx-preview renders one
+  // <section> per page break), then whole table-row boundaries, and only fall
+  // back to paragraph/line boundaries when a single row is taller than a page.
+  const sectionEdges = collect("section.docx");
+  const rowEdges = collect("section.docx, tr");
   const fineEdges = new Set<number>([0, totalPx]);
-  collect("tr, p, li, img, h1, h2, h3, h4, h5, h6").forEach((y) => fineEdges.add(y));
+  collect("section.docx, tr, p, li, img, h1, h2, h3, h4, h5, h6").forEach((y) => fineEdges.add(y));
   const fine = [...fineEdges].sort((a, b) => a - b);
 
   // Largest boundary in (start, limit] that is not inside an image.
@@ -192,7 +202,8 @@ function computePageCuts(
       cuts.push(totalPx);
       break;
     }
-    let cut = bestFit(rowEdges, start, limit);
+    let cut = bestFit(sectionEdges, start, limit);
+    if (cut <= start) cut = bestFit(rowEdges, start, limit);
     if (cut <= start) cut = bestFit(fine, start, limit);
     // A single block taller than a page: hard-cut at the page height, nudging
     // off an image edge if we somehow landed inside one.
