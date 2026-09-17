@@ -93,28 +93,32 @@ async function wordToPdfViaRender(file: File): Promise<OutputFile[]> {
     const scale = Math.max(1, Math.min(2, 15000 / contentHpx));
     const full = await rasterizeViaForeignObject(wrapper, idoc, scale);
 
+    // Choose page breaks that don't cut through a table row or an image: for
+    // each page take up to one page-height of content, but if that boundary
+    // would land inside a row/figure, snap it up to the top of that block so
+    // the whole block moves to the next page (CSS px, later scaled to device).
+    const cuts = computePageCuts(wrapper, pageHpx, contentHpx);
+
     const doc = await PDFDocument.create();
     const pageWpt = pageWpx * 0.75; // px (96 dpi) → pt (72 dpi)
     const pageHpt = pageHpx * 0.75;
-    const bandPx = pageHpx * scale;
-    const totalPages = Math.max(1, Math.ceil(full.height / bandPx));
-    for (let i = 0; i < totalPages; i++) {
-      const top = i * bandPx;
-      const sliceH = Math.min(bandPx, full.height - top);
-      if (sliceH <= 2) break; // skip an empty trailing sliver
+    for (let i = 0; i < cuts.length - 1; i++) {
+      const topPx = Math.round(cuts[i] * scale);
+      const sliceH = Math.round(cuts[i + 1] * scale) - topPx;
+      if (sliceH <= 2) continue; // skip an empty sliver
       const tmp = document.createElement("canvas");
       tmp.width = full.width;
-      tmp.height = Math.round(sliceH);
+      tmp.height = sliceH;
       const ctx = tmp.getContext("2d");
       if (!ctx) continue;
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, tmp.width, tmp.height);
-      ctx.drawImage(full, 0, top, full.width, sliceH, 0, 0, full.width, sliceH);
+      ctx.drawImage(full, 0, topPx, full.width, sliceH, 0, 0, full.width, sliceH);
       const dataUrl = tmp.toDataURL("image/jpeg", 0.92);
       const jpgBytes = Uint8Array.from(atob(dataUrl.split(",")[1] ?? ""), (c) => c.charCodeAt(0));
       const img = await doc.embedJpg(jpgBytes);
       const page = doc.addPage([pageWpt, pageHpt]);
-      const drawH = (sliceH / scale) * 0.75; // full pages fill the page; last is shorter
+      const drawH = (sliceH / scale) * 0.75; // content sits at the top of the page
       page.drawImage(img, { x: 0, y: pageHpt - drawH, width: pageWpt, height: drawH });
     }
     const bytes = await doc.save();
@@ -127,6 +131,81 @@ async function wordToPdfViaRender(file: File): Promise<OutputFile[]> {
   } finally {
     iframe.remove();
   }
+}
+
+/**
+ * Work out where to break a continuously-rendered document into pages so a cut
+ * never lands inside an image, a table row, or a line of text. Each page takes
+ * as much content as fits in a page height, then snaps the break up to the
+ * nearest safe boundary (a gap between blocks). Returns cut offsets in CSS px,
+ * from 0 to totalPx.
+ */
+function computePageCuts(
+  wrapper: HTMLElement,
+  pageHpx: number,
+  totalPx: number,
+): number[] {
+  const wrapTop = wrapper.getBoundingClientRect().top;
+  const edges = (el: Element): [number, number] => {
+    const r = el.getBoundingClientRect();
+    return [r.top - wrapTop, r.bottom - wrapTop];
+  };
+
+  // Images must never be split; record their spans so a cut is never placed
+  // inside one even if a block boundary happens to fall there.
+  const images = [...wrapper.querySelectorAll("img")].map(edges);
+  const insideImage = (y: number) => images.some(([t, b]) => y > t + 0.5 && y < b - 0.5);
+
+  const collect = (selector: string): number[] => {
+    const set = new Set<number>();
+    wrapper.querySelectorAll(selector).forEach((el) => {
+      const [t, b] = edges(el);
+      set.add(Math.round(t));
+      set.add(Math.round(b));
+    });
+    return [...set].filter((y) => y >= 0 && y <= totalPx).sort((a, b) => a - b);
+  };
+  // Prefer breaks at whole table-row boundaries; fall back to paragraph/line
+  // boundaries only when a single row is taller than a page.
+  const rowEdges = collect("tr");
+  const fineEdges = new Set<number>([0, totalPx]);
+  collect("tr, p, li, img, h1, h2, h3, h4, h5, h6").forEach((y) => fineEdges.add(y));
+  const fine = [...fineEdges].sort((a, b) => a - b);
+
+  // Largest boundary in (start, limit] that is not inside an image.
+  const bestFit = (arr: number[], start: number, limit: number): number => {
+    let best = -1;
+    for (const y of arr) {
+      if (y <= start) continue;
+      if (y > limit) break;
+      if (!insideImage(y)) best = y;
+    }
+    return best;
+  };
+
+  const cuts = [0];
+  let start = 0;
+  let guard = 0;
+  while (start < totalPx - 1 && guard++ < 20000) {
+    const limit = start + pageHpx;
+    if (limit >= totalPx) {
+      cuts.push(totalPx);
+      break;
+    }
+    let cut = bestFit(rowEdges, start, limit);
+    if (cut <= start) cut = bestFit(fine, start, limit);
+    // A single block taller than a page: hard-cut at the page height, nudging
+    // off an image edge if we somehow landed inside one.
+    if (cut <= start) {
+      cut = limit;
+      while (cut > start + 1 && insideImage(cut)) cut -= 1;
+      if (cut <= start) cut = limit;
+    }
+    cuts.push(cut);
+    start = cut;
+  }
+  if (cuts[cuts.length - 1] < totalPx) cuts.push(totalPx);
+  return cuts;
 }
 
 /**
