@@ -1,4 +1,4 @@
-# PDF Palooza
+# Pagize
 
 Master Prompt: PDF Tools SaaS
 
