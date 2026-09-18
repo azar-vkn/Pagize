@@ -111,8 +111,8 @@ async function wordToPdfViaRender(file: File): Promise<OutputFile[]> {
     const pageWpt = pageWpx * 0.75; // px (96 dpi) → pt (72 dpi)
     const pageHpt = pageHpx * 0.75;
     for (let i = 0; i < cuts.length - 1; i++) {
-      const topPx = Math.round(cuts[i] * scale);
-      const sliceH = Math.round(cuts[i + 1] * scale) - topPx;
+      const topPx = Math.round(cuts[i]! * scale);
+      const sliceH = Math.round(cuts[i + 1]! * scale) - topPx;
       if (sliceH <= 2) continue; // skip an empty sliver
       const tmp = document.createElement("canvas");
       tmp.width = full.width;
@@ -215,7 +215,7 @@ function computePageCuts(
     cuts.push(cut);
     start = cut;
   }
-  if (cuts[cuts.length - 1] < totalPx) cuts.push(totalPx);
+  if (cuts[cuts.length - 1]! < totalPx) cuts.push(totalPx);
   return cuts;
 }
 

@@ -33,6 +33,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { getTool } from "@/lib/tools";
+import { track, totalBytes } from "@/lib/analytics";
 import {
   addPageNumbers,
   compressPdf,
@@ -294,7 +295,8 @@ function ToolPage() {
     setPageDimensions(null);
     setCropPreviewPage(0);
     setOpts(defaults);
-  }, [slug]);
+    track("tool_opened", { tool: slug, category: tool.category });
+  }, [slug, tool.category]);
 
   useEffect(() => {
     const first = files[0];
@@ -449,6 +451,14 @@ function ToolPage() {
       });
       setBatchProgress(initialProgress);
 
+      const batchStartedAt = performance.now();
+      track("tool_run", {
+        tool: slug,
+        file_count: files.length,
+        total_bytes: totalBytes(files),
+        batch: true,
+      });
+
       const runSingleFile = async (file: File): Promise<OutputFile[]> => {
         let out: OutputFile[] = [];
         switch (slug) {
@@ -548,12 +558,25 @@ function ToolPage() {
       await Promise.all(workers);
 
       setResults(allOut);
+      track(allOut.length > 0 ? "tool_success" : "tool_error", {
+        tool: slug,
+        ms: Math.round(performance.now() - batchStartedAt),
+        output_count: allOut.length,
+        batch: true,
+      });
       setBusy(false);
       return;
     }
 
     setBusy(true);
     setError(null);
+    const startedAt = performance.now();
+    track("tool_run", {
+      tool: slug,
+      file_count: files.length,
+      total_bytes: totalBytes(files),
+      batch: false,
+    });
     try {
       const file = files[0]!;
       let out: OutputFile[] = [];
@@ -689,8 +712,18 @@ function ToolPage() {
           throw new Error("This tool isn't available yet.");
       }
       setResults(out);
+      track("tool_success", {
+        tool: slug,
+        ms: Math.round(performance.now() - startedAt),
+        output_count: out.length,
+        batch: false,
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong with that file.");
+      track("tool_error", {
+        tool: slug,
+        message: (e instanceof Error ? e.message : "unknown").slice(0, 100),
+      });
     } finally {
       setBusy(false);
     }
@@ -703,6 +736,7 @@ function ToolPage() {
     a.download = out.name;
     a.click();
     URL.revokeObjectURL(url);
+    track("output_downloaded", { tool: slug });
   };
 
   const downloadAll = () => {
