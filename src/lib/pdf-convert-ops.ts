@@ -803,6 +803,23 @@ export async function pdfToWord(file: File): Promise<OutputFile[]> {
   const media: { relId: string; name: string; bytes: Uint8Array }[] = [];
   const allParagraphs: string[] = [];
 
+  // Make the Word page the same size as the source page, with no margins, so
+  // each rendered page fills the sheet edge-to-edge instead of floating as a
+  // small image inside wide default margins. Use the first page for the section
+  // size (PDFs are almost always uniform); other sizes still fit, preserving
+  // aspect. Dimensions from getPageDimensions are PDF points (= Word points).
+  let sectionWpt = 612; // letter fallback
+  let sectionHpt = 792;
+  try {
+    const d0 = await getPageDimensions(file, 0);
+    if (d0.width > 0 && d0.height > 0) {
+      sectionWpt = d0.width;
+      sectionHpt = d0.height;
+    }
+  } catch {
+    /* keep the letter fallback */
+  }
+
   // Render every page to a high-resolution image and embed it one-per-page, so
   // the Word document is a faithful visual copy of the original. In a pure
   // browser tool this is the only way to preserve arbitrary layout, fonts,
@@ -817,8 +834,9 @@ export async function pdfToWord(file: File): Promise<OutputFile[]> {
       const relId = `rId${media.length + 1}`;
       const name = `image${media.length + 1}.jpeg`;
       media.push({ relId, name, bytes });
-      // 0.98 leaves a hair of slack so the image never spills onto a blank page.
-      const fit = Math.min(DOCX_USABLE_W_PT / dims.width, DOCX_USABLE_H_PT / dims.height) * 0.98;
+      // Fill the page (a same-size page maps 1:1; a different size scales to
+      // fit). 0.997 keeps it a hair under the edge so it can't spill over.
+      const fit = Math.min(sectionWpt / dims.width, sectionHpt / dims.height) * 0.997;
       const cx = Math.round(dims.width * fit * EMU_PER_PT);
       const cy = Math.round(dims.height * fit * EMU_PER_PT);
       allParagraphs.push(docxImageParagraph(relId, cx, cy, `Page ${pageIdx + 1}`, breakBefore));
@@ -827,6 +845,8 @@ export async function pdfToWord(file: File): Promise<OutputFile[]> {
     }
   }
 
+  const pgW = Math.round(sectionWpt * 20); // points → twips
+  const pgH = Math.round(sectionHpt * 20);
   const docXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
             xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -835,8 +855,8 @@ export async function pdfToWord(file: File): Promise<OutputFile[]> {
             xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
 <w:body>${allParagraphs.join("")}
 <w:sectPr>
-  <w:pgSz w:w="12240" w:h="15840"/>
-  <w:pgMar w:top="576" w:right="576" w:bottom="576" w:left="576" w:header="288" w:footer="288" w:gutter="0"/>
+  <w:pgSz w:w="${pgW}" w:h="${pgH}"/>
+  <w:pgMar w:top="0" w:right="0" w:bottom="0" w:left="0" w:header="0" w:footer="0" w:gutter="0"/>
 </w:sectPr>
 </w:body>
 </w:document>`;
@@ -872,10 +892,8 @@ ${jpegDefault}<Override PartName="/word/document.xml" ContentType="application/v
   return [{ name: `${baseName(file)}.docx`, blob }];
 }
 
-// DOCX page geometry: letter minus 0.4" margins, and EMUs per point (914400/72).
+// EMUs per point (914400 EMU per inch / 72 points per inch).
 const EMU_PER_PT = 12700;
-const DOCX_USABLE_W_PT = 554; // letter 612pt − 2×0.4" margins
-const DOCX_USABLE_H_PT = 734; // letter 792pt − 2×0.4" margins
 
 /** An inline-image paragraph (DrawingML) for an embedded page raster. */
 function docxImageParagraph(
