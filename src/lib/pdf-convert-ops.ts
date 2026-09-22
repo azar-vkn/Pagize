@@ -98,7 +98,10 @@ async function wordToPdfViaRender(file: File): Promise<OutputFile[]> {
     // metrics exactly) and slice it into pages. Cap the
     // scale so long documents stay under the browser's max canvas dimension.
     const contentHpx = Math.max(wrapper.scrollHeight, pageHpx);
-    const scale = Math.max(1, Math.min(2, 15000 / contentHpx));
+    // Cap the raster so its height never exceeds the browser's max canvas
+    // dimension (~16384px). A long document gets a smaller scale (softer, but
+    // still a full visual copy) instead of blank/truncated trailing pages.
+    const scale = Math.min(2, 16000 / contentHpx);
     const full = await rasterizeViaForeignObject(wrapper, idoc, scale);
 
     // Choose page breaks that don't cut through a table row or an image: for
@@ -235,6 +238,10 @@ async function rasterizeViaForeignObject(
   const styleText = Array.from(idoc.querySelectorAll("style"))
     .map((s) => s.textContent ?? "")
     .join("\n");
+  // The SVG is parsed as XML, so raw CSS containing '&' or '<' would make it
+  // malformed and the whole render would fail (and silently fall back to the
+  // low-fidelity path). Wrap the CSS in CDATA, escaping any literal "]]>".
+  const styleSafe = styleText.replace(/]]>/g, "]]]]><![CDATA[>");
   const clone = el.cloneNode(true) as HTMLElement;
   clone.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
   clone.style.margin = "0";
@@ -243,7 +250,7 @@ async function rasterizeViaForeignObject(
     `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
     `<foreignObject x="0" y="0" width="${w}" height="${h}">` +
     `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${w}px;background:#ffffff;">` +
-    `<style>${styleText}</style>${serialized}</div>` +
+    `<style><![CDATA[${styleSafe}]]></style>${serialized}</div>` +
     `</foreignObject></svg>`;
   const url = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
   const img = new Image();
