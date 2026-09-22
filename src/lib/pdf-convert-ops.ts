@@ -74,9 +74,20 @@ async function wordToPdfViaRender(file: File): Promise<OutputFile[]> {
     // margin between pages) so the measured height is exactly the content — an
     // empty one-page doc then stays one page instead of spilling onto a second.
     const override = idoc.createElement("style");
-    override.textContent =
+    let overrideCss =
       ".docx-wrapper{padding:0 !important;background:#ffffff !important;}" +
       ".docx-wrapper>section.docx{box-shadow:none !important;margin:0 !important;}";
+    if (!pg) {
+      // The DOCX declares no page geometry, so docx-preview lays it out as one
+      // compact block with no margins — which would collapse the whole document
+      // onto a single cramped page. Apply a default Letter page box (1" margins,
+      // page-height floor) so text wraps and the content flows across pages the
+      // way Word would, letting the paginator split it correctly.
+      overrideCss +=
+        ".docx-wrapper>section.docx{width:816px !important;min-height:1056px !important;" +
+        "padding:96px !important;box-sizing:border-box !important;}";
+    }
+    override.textContent = overrideCss;
     idoc.head.appendChild(override);
     const wrapper = holder.querySelector<HTMLElement>(".docx-wrapper") ?? holder;
 
