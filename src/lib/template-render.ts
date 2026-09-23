@@ -838,12 +838,39 @@ const FALLBACK: TemplateSpec = {
 };
 
 /* ------------------------------------------------------------------ *
+ * Custom (user-added) details
+ * ------------------------------------------------------------------ */
+
+/** A free-form label/value pair the user adds beyond the template's fields. */
+export type CustomDetail = { label: string; value: string };
+
+/** Appends an "Additional Details" section listing any user-added fields. */
+function renderExtraDetails(l: Layout, details: CustomDetail[]): void {
+  const clean = details.filter((d) => (d.label ?? "").trim() || (d.value ?? "").trim());
+  if (!clean.length) return;
+
+  l.move(14);
+  l.sectionHeading("Additional Details");
+  for (const d of clean) {
+    const label = (d.label ?? "").trim();
+    const value = (d.value ?? "").trim();
+    if (label) {
+      l.text(label, { size: 9.5, font: l.fonts.bold });
+      l.move(2);
+    }
+    if (value) l.text(value, { size: 10.5, lineHeight: 1.5 });
+    l.move(10);
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * Entry point
  * ------------------------------------------------------------------ */
 
 export async function generateTemplatePdf(
   templateId: string,
   formData: Record<string, string>,
+  customDetails: CustomDetail[] = [],
 ): Promise<OutputFile> {
   const spec = SPECS[templateId] ?? FALLBACK;
 
@@ -857,8 +884,14 @@ export async function generateTemplatePdf(
     return value || fallback;
   };
 
+  const hasExtras = customDetails.some((d) => (d.label ?? "").trim() || (d.value ?? "").trim());
+
   if (SPECS[templateId]) {
     spec.render(layout, get);
+    // Fixed decorative layouts (e.g. the certificate) fill the page and pin
+    // their footer, so give any extra details a clean page of their own.
+    if (hasExtras && spec.landscape) layout.breakPage();
+    renderExtraDetails(layout, customDetails);
   } else {
     // Unknown template: render whatever fields we were handed, readably.
     layout.text(humanize(templateId) || "Document", { size: 22, font: fonts.bold });
@@ -872,6 +905,7 @@ export async function generateTemplatePdf(
       layout.text(value, { size: 10.5 });
       layout.move(14);
     }
+    renderExtraDetails(layout, customDetails);
   }
 
   doc.setTitle(spec.title);

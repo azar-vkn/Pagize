@@ -525,3 +525,4 @@ export async function editPdfReplaceText(
  * callers keep importing every PDF operation from one module.
  */
 export { generateTemplatePdf } from "./template-render";
+export type { CustomDetail } from "./template-render";

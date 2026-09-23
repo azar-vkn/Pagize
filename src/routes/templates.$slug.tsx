@@ -1,5 +1,5 @@
 import { createFileRoute, Link, notFound } from "@tanstack/react-router";
-import { ArrowRight, ChevronLeft, Download, RotateCcw, Loader2 } from "lucide-react";
+import { ArrowRight, ChevronLeft, Download, RotateCcw, Loader2, Plus, X } from "lucide-react";
 import { useState, useEffect, Suspense, lazy } from "react";
 import { IslandNav } from "@/components/IslandNav";
 import { SiteFooter } from "@/components/SiteFooter";
@@ -11,8 +11,15 @@ import { Breadcrumbs } from "@/components/Breadcrumbs";
 import { formatBytes } from "@/components/DropZone";
 import { templates } from "@/lib/templates-data";
 import { SITE_URL } from "@/lib/site";
-import { generateTemplatePdf, type OutputFile } from "@/lib/pdf-ops";
+import { generateTemplatePdf, type OutputFile, type CustomDetail } from "@/lib/pdf-ops";
 import { useAuth } from "@/hooks/useAuth";
+
+type CustomRow = CustomDetail & { id: string };
+
+const newRowId = () =>
+  typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `row-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 const PdfPreview = lazy(() =>
   import("@/components/PdfPreview").then((m) => ({ default: m.PdfPreview })),
@@ -73,24 +80,26 @@ function TemplatePage() {
   const template = templates.find((t) => t.id === slug)!;
   const { checkUsageLimit } = useAuth();
   const [formData, setFormData] = useState<Record<string, string>>({});
+  const [customRows, setCustomRows] = useState<CustomRow[]>([]);
   const [previewFile, setPreviewFile] = useState<File | null>(null);
   const [results, setResults] = useState<OutputFile | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // Initialize form data
+  // Initialize form data (and clear any custom rows) when the template changes.
   useEffect(() => {
     const initial: Record<string, string> = {};
     for (const field of template.fields) {
       initial[field.name] = field.defaultValue || "";
     }
     setFormData(initial);
+    setCustomRows([]);
   }, [template]);
 
   // Debounced Live Preview Generation
   useEffect(() => {
     const timer = setTimeout(async () => {
       try {
-        const out = await generateTemplatePdf(template.id, formData);
+        const out = await generateTemplatePdf(template.id, formData, customRows);
         const file = new File([out.blob], out.name, { type: "application/pdf" });
         setPreviewFile(file);
       } catch (e) {
@@ -98,17 +107,24 @@ function TemplatePage() {
       }
     }, 500);
     return () => clearTimeout(timer);
-  }, [formData, template.id]);
+  }, [formData, customRows, template.id]);
 
   const handleChange = (name: string, value: string) => {
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
+  const addCustomRow = () =>
+    setCustomRows((prev) => [...prev, { id: newRowId(), label: "", value: "" }]);
+  const updateCustomRow = (id: string, key: "label" | "value", value: string) =>
+    setCustomRows((prev) => prev.map((r) => (r.id === id ? { ...r, [key]: value } : r)));
+  const removeCustomRow = (id: string) =>
+    setCustomRows((prev) => prev.filter((r) => r.id !== id));
+
   const handleGenerate = async () => {
     if (!checkUsageLimit()) return;
     setBusy(true);
     try {
-      const out = await generateTemplatePdf(template.id, formData);
+      const out = await generateTemplatePdf(template.id, formData, customRows);
       setResults(out);
     } catch (e) {
       console.error(e);
@@ -210,6 +226,60 @@ function TemplatePage() {
                   </div>
                 ))}
               </div>
+
+              <div className="space-y-3 border-t border-border pt-5">
+                <div>
+                  <h3 className="text-sm font-semibold">Custom details</h3>
+                  <p className="text-xs text-muted-foreground">
+                    Add your own fields — they appear under “Additional Details”.
+                  </p>
+                </div>
+
+                {customRows.map((row) => (
+                  <div
+                    key={row.id}
+                    className="space-y-1.5 rounded-xl border border-border/70 bg-background/60 p-3"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Input
+                        aria-label="Detail label"
+                        placeholder="Label (e.g. PO Number)"
+                        value={row.label}
+                        onChange={(e) => updateCustomRow(row.id, "label", e.target.value)}
+                        className="rounded-lg"
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="shrink-0 text-muted-foreground"
+                        aria-label="Remove detail"
+                        onClick={() => removeCustomRow(row.id)}
+                      >
+                        <X className="size-4" />
+                      </Button>
+                    </div>
+                    <Textarea
+                      aria-label="Detail value"
+                      placeholder="Value"
+                      value={row.value}
+                      onChange={(e) => updateCustomRow(row.id, "value", e.target.value)}
+                      className="rounded-lg resize-none"
+                      rows={2}
+                    />
+                  </div>
+                ))}
+
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="w-full rounded-xl"
+                  onClick={addCustomRow}
+                >
+                  <Plus className="size-4" /> Add custom detail
+                </Button>
+              </div>
+
               <Button
                 className="w-full rounded-full"
                 size="lg"
