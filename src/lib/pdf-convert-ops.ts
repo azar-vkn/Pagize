@@ -6,7 +6,15 @@
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import JSZip from "jszip";
 import type { OutputFile } from "./pdf-ops";
-import { renderPageToBlob, getPageCount, getPageDimensions, extractAllText } from "./pdf-renderer";
+import {
+  renderPageToBlob,
+  getPageCount,
+  getPageDimensions,
+  extractAllText,
+  extractPageLayout,
+  extractAllTextStructured,
+  type PageLayout,
+} from "./pdf-renderer";
 
 const baseName = (file: File) => file.name.replace(/\.[^.]+$/, "");
 
@@ -883,6 +891,207 @@ ${jpegDefault}<Override PartName="/word/document.xml" ContentType="application/v
   zip.file("_rels/.rels", relsDocx);
   zip.file("word/_rels/document.xml.rels", wordRels);
   zip.file("word/document.xml", docXml);
+  for (const m of media) zip.file(`word/media/${m.name}`, m.bytes);
+
+  const blob = await zip.generateAsync({
+    type: "blob",
+    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  });
+  return [{ name: `${baseName(file)}.docx`, blob }];
+}
+
+/** A page holds a table when its ruling lines form a grid (>=2 cols, >=2 rows). */
+function pageHasTable(layout: PageLayout): boolean {
+  return layout.colBounds.length >= 2 && layout.rowBounds.length >= 2;
+}
+
+/**
+ * Convert a PDF to an EDITABLE Word document: reconstruct text runs and
+ * paragraphs from the PDF's text layer (with basic heading detection), so the
+ * result has real, selectable text. Pages that are scanned (no selectable text)
+ * or contain a ruled table are embedded as an image instead, so their layout
+ * survives. Lower fidelity than the visual copy, but editable — best on
+ * text-based PDFs.
+ */
+export async function pdfToWordEditable(file: File): Promise<OutputFile[]> {
+  const numPages = await getPageCount(file);
+
+  // Letter page minus 0.4" margins (576 twips = 28.8pt), for embedded-image fit.
+  const USABLE_W_PT = 612 - 2 * 28.8;
+  const USABLE_H_PT = 792 - 2 * 28.8;
+
+  // First pass: read each page's ruling-line layout (fast, no canvas render)
+  // and flag table vs. plain-text pages.
+  const layouts: (PageLayout | null)[] = [];
+  const isTablePage: boolean[] = [];
+  for (let p = 0; p < numPages; p++) {
+    let layout: PageLayout | null = null;
+    try {
+      layout = await extractPageLayout(file, p);
+    } catch {
+      layout = null;
+    }
+    layouts.push(layout);
+    isTablePage.push(layout ? pageHasTable(layout) : false);
+  }
+
+  // The structured (canvas-based) text pass is only needed when some page is
+  // plain text — table/image-only PDFs skip it entirely.
+  const needsText = layouts.some((l, i) => !isTablePage[i] && (l?.items.length ?? 0) > 0);
+  const pages = needsText ? await extractAllTextStructured(file) : null;
+
+  // Most common font size/family become the document defaults.
+  let bodyFontSize = 11;
+  let bodyFontFamily = "Arial";
+  if (pages) {
+    const sizeCounts = new Map<number, number>();
+    const familyCounts = new Map<string, number>();
+    for (const page of pages) {
+      for (const line of page) {
+        for (const run of line.runs) {
+          if (!run.text.trim()) continue;
+          const rounded = Math.round(run.fontSize);
+          sizeCounts.set(rounded, (sizeCounts.get(rounded) ?? 0) + 1);
+          familyCounts.set(run.fontFamily, (familyCounts.get(run.fontFamily) ?? 0) + 1);
+        }
+      }
+    }
+    let maxCount = 0;
+    for (const [size, count] of sizeCounts) {
+      if (count > maxCount) {
+        maxCount = count;
+        bodyFontSize = size;
+      }
+    }
+    maxCount = 0;
+    for (const [family, count] of familyCounts) {
+      if (count > maxCount) {
+        maxCount = count;
+        bodyFontFamily = family;
+      }
+    }
+  }
+
+  const allParagraphs: string[] = [];
+  const media: { relId: string; name: string; bytes: Uint8Array }[] = [];
+
+  for (let pageIdx = 0; pageIdx < numPages; pageIdx++) {
+    const pageLines = pages?.[pageIdx] ?? [];
+    let pendingBreak = pageIdx > 0;
+
+    // Scanned (no text) or table pages are embedded as an image so their
+    // layout is preserved instead of shredded into mis-ordered paragraphs.
+    const pageHasText = (layouts[pageIdx]?.items.length ?? 0) > 0;
+    if (isTablePage[pageIdx] || !pageHasText) {
+      try {
+        const dims = await getPageDimensions(file, pageIdx);
+        const blob = await renderPageToBlob(file, pageIdx, 2, 0.85);
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        const relId = `rId${media.length + 2}`; // rId1 is styles.xml
+        const name = `image${media.length + 1}.jpeg`;
+        media.push({ relId, name, bytes });
+        const fit = Math.min(USABLE_W_PT / dims.width, USABLE_H_PT / dims.height) * 0.98;
+        const cx = Math.round(dims.width * fit * EMU_PER_PT);
+        const cy = Math.round(dims.height * fit * EMU_PER_PT);
+        allParagraphs.push(docxImageParagraph(relId, cx, cy, `Page ${pageIdx + 1}`, pendingBreak));
+      } catch {
+        allParagraphs.push(
+          pendingBreak ? `<w:p><w:pPr><w:pageBreakBefore/></w:pPr></w:p>` : `<w:p/>`,
+        );
+      }
+      continue;
+    }
+
+    for (const line of pageLines) {
+      if (line.runs.length === 0) {
+        const breakPr = pendingBreak ? "<w:pageBreakBefore/>" : "";
+        pendingBreak = false;
+        allParagraphs.push(`<w:p><w:pPr>${breakPr}<w:spacing w:after="0"/></w:pPr></w:p>`);
+        continue;
+      }
+
+      const avgFontSize = line.runs.reduce((s, r) => s + r.fontSize, 0) / line.runs.length;
+      const isLargeFont = avgFontSize > bodyFontSize * 1.25;
+      const allBold = line.runs.every((r) => r.isBold);
+      const isHeading = isLargeFont && allBold;
+      const isSubheading = isLargeFont && !allBold;
+
+      const breakPr = pendingBreak ? "<w:pageBreakBefore/>" : "";
+      pendingBreak = false;
+
+      const pStyle = isHeading
+        ? `<w:pStyle w:val="Heading1"/>`
+        : isSubheading
+          ? `<w:pStyle w:val="Heading2"/>`
+          : "";
+      const spacingBefore = line.isNewParagraph ? 120 : 0;
+      const pSpacing = `<w:spacing w:before="${spacingBefore}" w:after="40" w:line="276" w:lineRule="auto"/>`;
+
+      const runsXml = line.runs
+        .map((run) => {
+          const wordFontSize = Math.round(run.fontSize * 2);
+          const boldPr = run.isBold ? `<w:b/><w:bCs/>` : "";
+          const italicPr = run.isItalic ? `<w:i/><w:iCs/>` : "";
+          const sizePr = `<w:sz w:val="${wordFontSize}"/><w:szCs w:val="${wordFontSize}"/>`;
+          const fontPr = `<w:rFonts w:ascii="${escapeXml(run.fontFamily)}" w:hAnsi="${escapeXml(run.fontFamily)}" w:cs="${escapeXml(run.fontFamily)}"/>`;
+          const rPr = `<w:rPr>${fontPr}${boldPr}${italicPr}${sizePr}</w:rPr>`;
+          return `<w:r>${rPr}<w:t xml:space="preserve">${escapeXml(run.text)}</w:t></w:r>`;
+        })
+        .join("");
+
+      allParagraphs.push(`<w:p><w:pPr>${breakPr}${pStyle}${pSpacing}</w:pPr>${runsXml}</w:p>`);
+    }
+  }
+
+  const docXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+            xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+            xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+            xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+<w:body>${allParagraphs.join("")}
+<w:sectPr>
+  <w:pgSz w:w="12240" w:h="15840"/>
+  <w:pgMar w:top="576" w:right="576" w:bottom="576" w:left="576" w:header="288" w:footer="288" w:gutter="0"/>
+</w:sectPr>
+</w:body>
+</w:document>`;
+
+  const defaultFontXml = `<w:rFonts w:ascii="${escapeXml(bodyFontFamily)}" w:hAnsi="${escapeXml(bodyFontFamily)}" w:cs="${escapeXml(bodyFontFamily)}"/>`;
+  const defaultSize = Math.round(bodyFontSize * 2);
+  const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:docDefaults><w:rPrDefault><w:rPr>${defaultFontXml}<w:sz w:val="${defaultSize}"/><w:szCs w:val="${defaultSize}"/></w:rPr></w:rPrDefault></w:docDefaults>
+  <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:rPr>${defaultFontXml}<w:sz w:val="${defaultSize}"/><w:szCs w:val="${defaultSize}"/></w:rPr></w:style>
+  <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:before="240" w:after="120"/></w:pPr><w:rPr><w:b/><w:bCs/><w:sz w:val="32"/><w:szCs w:val="32"/></w:rPr></w:style>
+  <w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:before="200" w:after="80"/></w:pPr><w:rPr><w:sz w:val="28"/><w:szCs w:val="28"/></w:rPr></w:style>
+</w:styles>`;
+
+  const jpegDefault = media.length ? `<Default Extension="jpeg" ContentType="image/jpeg"/>\n` : "";
+  const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+${jpegDefault}<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>`;
+  const imageRels = media
+    .map(
+      (m) =>
+        `<Relationship Id="${m.relId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${m.name}"/>`,
+    )
+    .join("");
+  const wordRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+${imageRels}</Relationships>`;
+
+  const zip = new JSZip();
+  zip.file("[Content_Types].xml", contentTypes);
+  zip.file("_rels/.rels", relsDocx);
+  zip.file("word/_rels/document.xml.rels", wordRels);
+  zip.file("word/document.xml", docXml);
+  zip.file("word/styles.xml", stylesXml);
   for (const m of media) zip.file(`word/media/${m.name}`, m.bytes);
 
   const blob = await zip.generateAsync({

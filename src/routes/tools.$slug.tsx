@@ -183,6 +183,8 @@ type Options = {
   editColorB: number;
   // PDF to JPG quality
   jpgQuality: number;
+  // PDF to Word: reconstruct editable text instead of a visual (image) copy
+  pdfToWordEditable: boolean;
   // Text Replacements
   textReplacements: TextReplacement[];
   selectedTextItem: TextItemPosition | null;
@@ -220,6 +222,7 @@ const defaults: Options = {
   selectedTextPageIndex: -1,
   selectedTextItemIdx: -1,
   jpgQuality: 92,
+  pdfToWordEditable: false,
 };
 
 /** Starting rectangle (top-left, PDF points) for a newly signed page. */
@@ -489,9 +492,13 @@ function ToolPage() {
           case "pdf-to-jpg":
             out = await (await getPdfConvertOps()).pdfToJpg(file, opts.jpgQuality / 100);
             break;
-          case "pdf-to-word":
-            out = await (await getPdfConvertOps()).pdfToWord(file);
+          case "pdf-to-word": {
+            const cops = await getPdfConvertOps();
+            out = opts.pdfToWordEditable
+              ? await cops.pdfToWordEditable(file)
+              : await cops.pdfToWord(file);
             break;
+          }
           case "pdf-to-powerpoint":
             out = await (await getPdfConvertOps()).pdfToPowerpoint(file);
             break;
@@ -637,7 +644,9 @@ function ToolPage() {
         }
         case "pdf-to-word": {
           const ops = await getPdfConvertOps();
-          out = await ops.pdfToWord(file);
+          out = opts.pdfToWordEditable
+            ? await ops.pdfToWordEditable(file)
+            : await ops.pdfToWord(file);
           break;
         }
         case "pdf-to-powerpoint": {
@@ -1262,9 +1271,26 @@ function ToolPage() {
         );
       case "pdf-to-word":
         return (
-          <p className="text-sm text-muted-foreground">
-            Extracts text from each page and creates an editable DOCX file.
-          </p>
+          <div className="space-y-3">
+            <div className="flex items-start justify-between gap-3 rounded-xl border border-border bg-background/60 p-3">
+              <div className="min-w-0">
+                <Label htmlFor="pdf-word-editable" className="text-sm font-medium">
+                  Editable text
+                </Label>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {opts.pdfToWordEditable
+                    ? "Rebuilds selectable, editable text (layout may shift; best for text PDFs). Scanned pages and tables stay as images."
+                    : "Off: each page is an exact image copy — looks identical, but the text isn't editable."}
+                </p>
+              </div>
+              <Switch
+                id="pdf-word-editable"
+                checked={opts.pdfToWordEditable}
+                onCheckedChange={(v) => set("pdfToWordEditable", v)}
+                className="mt-0.5 shrink-0"
+              />
+            </div>
+          </div>
         );
       case "pdf-to-powerpoint":
         return (
