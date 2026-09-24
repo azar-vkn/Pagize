@@ -1024,6 +1024,12 @@ export async function pdfToWordEditable(file: File): Promise<OutputFile[]> {
         : isSubheading
           ? `<w:pStyle w:val="Heading2"/>`
           : "";
+      const jc =
+        line.align === "center"
+          ? `<w:jc w:val="center"/>`
+          : line.align === "right"
+            ? `<w:jc w:val="right"/>`
+            : "";
       const spacingBefore = line.isNewParagraph ? 120 : 0;
       const pSpacing = `<w:spacing w:before="${spacingBefore}" w:after="40" w:line="276" w:lineRule="auto"/>`;
 
@@ -1039,7 +1045,7 @@ export async function pdfToWordEditable(file: File): Promise<OutputFile[]> {
         })
         .join("");
 
-      allParagraphs.push(`<w:p><w:pPr>${breakPr}${pStyle}${pSpacing}</w:pPr>${runsXml}</w:p>`);
+      allParagraphs.push(`<w:p><w:pPr>${breakPr}${pStyle}${jc}${pSpacing}</w:pPr>${runsXml}</w:p>`);
     }
   }
 

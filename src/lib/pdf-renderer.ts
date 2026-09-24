@@ -208,6 +208,8 @@ export interface ExtractedLine {
   runs: TextRun[];
   /** True when there's a paragraph-sized gap before this line. */
   isNewParagraph: boolean;
+  /** Horizontal alignment inferred from the line's position on the page. */
+  align?: "left" | "center" | "right";
 }
 
 /** Cached font metadata resolved once per page. */
@@ -375,20 +377,29 @@ export async function extractPageTextStructured(
     page as unknown as { commonObjs?: { has?(k: string): boolean; get?(k: string): unknown } },
   );
 
-  const result: ExtractedLine[] = [];
+  // Collect lines with their horizontal extent so alignment can be inferred in
+  // a second pass (once the page's own left margin / content width are known).
+  type RawLine = { runs: TextRun[]; isNewParagraph: boolean; minX: number; maxX: number };
+  const raw: RawLine[] = [];
   let currentRuns: TextRun[] = [];
   let lastY: number | null = null;
   let isFirstLine = true;
+  let lineMinX = Infinity;
+  let lineMaxX = -Infinity;
 
   const flushLine = (newParagraph: boolean) => {
     if (currentRuns.length > 0 || !isFirstLine) {
-      result.push({
+      raw.push({
         runs: [...currentRuns],
         isNewParagraph: newParagraph && !isFirstLine,
+        minX: lineMinX,
+        maxX: lineMaxX,
       });
       isFirstLine = false;
     }
     currentRuns = [];
+    lineMinX = Infinity;
+    lineMaxX = -Infinity;
   };
 
   for (const item of content.items) {
@@ -396,6 +407,10 @@ export async function extractPageTextStructured(
     if (!item.str) continue; // skip empty strings
 
     const ty = item.transform[5];
+    const ix = item.transform[4];
+    const iw = (item as { width?: number }).width ?? 0;
+    lineMinX = Math.min(lineMinX, ix);
+    lineMaxX = Math.max(lineMaxX, ix + iw);
     const fontSize = Math.abs(item.transform[3]) || Math.abs(item.transform[0]) || 12;
     const meta = fontMeta.get(item.fontName) ?? {
       fontFamily: "Arial",
@@ -411,7 +426,7 @@ export async function extractPageTextStructured(
         flushLine(isParagraph);
         if (isParagraph) {
           // empty paragraph entry for spacing
-          result.push({ runs: [], isNewParagraph: true });
+          raw.push({ runs: [], isNewParagraph: true, minX: Infinity, maxX: -Infinity });
         }
       }
     }
@@ -458,7 +473,39 @@ export async function extractPageTextStructured(
   }
   if (currentRuns.length > 0) flushLine(false);
 
-  return result;
+  // ── Second pass: infer alignment ──
+  // The page's left margin is the leftmost text edge; content width runs to the
+  // rightmost. A line indented from the left margin by roughly the same amount
+  // as its right-hand gap is centered; a line pushed hard to the right edge is
+  // right-aligned; everything else is left.
+  const view = (page as unknown as { view?: number[] }).view;
+  const pageW = view && view.length >= 4 ? view[2]! - view[0]! : 595;
+  let leftMargin = Infinity;
+  let contentRight = -Infinity;
+  for (const l of raw) {
+    if (l.runs.length && isFinite(l.minX)) {
+      leftMargin = Math.min(leftMargin, l.minX);
+      contentRight = Math.max(contentRight, l.maxX);
+    }
+  }
+  if (!isFinite(leftMargin)) leftMargin = 0;
+  if (contentRight < 0) contentRight = pageW;
+
+  return raw.map((l) => {
+    let align: "left" | "center" | "right" = "left";
+    if (l.runs.length && isFinite(l.minX)) {
+      const leftIndent = l.minX - leftMargin;
+      const rightGap = contentRight - l.maxX;
+      // Centered: the line starts indented from the left margin and sits roughly
+      // symmetric between the margins (its midpoint near the content midpoint).
+      if (leftIndent > pageW * 0.04 && Math.abs(leftIndent - rightGap) < pageW * 0.1) {
+        align = "center";
+      } else if (leftIndent > pageW * 0.15 && rightGap < pageW * 0.03) {
+        align = "right";
+      }
+    }
+    return { runs: l.runs, isNewParagraph: l.isNewParagraph, align };
+  });
 }
 
 /** Extract structured text from all pages. */
